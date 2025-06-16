@@ -12,6 +12,7 @@ import HypercubeCore from '../core/HypercubeCore.js';
 import ShaderManager from '../core/ShaderManager.js';
 import GeometryManager from '../core/GeometryManager.js';
 import ProjectionManager from '../core/ProjectionManager.js';
+import VisualizerController from './VisualizerController.js'; // Import VisualizerController
 
 document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('hypercube-canvas');
@@ -29,8 +30,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const valueDisplays = {}; for (const key in sliders) { if(sliders[key]) valueDisplays[key] = document.getElementById(`${sliders[key].id}-value`); }
     const geometrySelect = document.getElementById('geometryType'); const projectionSelect = document.getElementById('projectionMethod');
     const reactivityIndicator = document.querySelector('.reactivity-indicator');
+    let currentDataSource = 'microphone'; // Added state variable
     
-    // Add click handler to reactivity indicator to manually trigger mic permission
     if (reactivityIndicator) {
         reactivityIndicator.addEventListener('click', async () => {
             // Only try to setup audio if not already set up
@@ -58,9 +59,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let mainVisualizerCore = null, geometryManager = null, projectionManager = null, shaderManager = null;
     
     // Enhanced audio analysis data including pitch detection
-    let analysisData = { 
-        bass: 0, mid: 0, high: 0, 
+    let analysisData = {
+        // bass, mid, high and their smooth versions can be kept for specific UI mappings
+        // or direct use if some logic still relies on these named versions for the first 3 channels.
+        // However, the primary source for HypercubeCore will be dataChannelsSmooth.
+        bass: 0, mid: 0, high: 0,
         bassSmooth: 0, midSmooth: 0, highSmooth: 0,
+        dataChannels: Array(8).fill(0.0),       // Raw values from source
+        dataChannelsSmooth: Array(8).fill(0.0), // Smoothed values for shaders
         dominantPitch: 0,        // Frequency of dominant pitch in Hz
         dominantPitchValue: 0,   // Strength of dominant pitch 0-1
         pitch: {                 // Structured pitch data
@@ -99,6 +105,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Transient detection
     let lastEnergy = 0;       // For transient smoothing
     let lastPitch = 0;        // For pitch changes detection
+
+    function generateProceduralData(time) {
+        const channels = [];
+        for (let i = 0; i < 8; i++) {
+            channels.push(0.5 + 0.5 * Math.sin(time * (0.5 + i * 0.3) + i * 0.5));
+        }
+        return channels;
+    }
 
     async function setupAudio() {
         try {
@@ -151,7 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
             statusDiv.textContent = "Mic OK - Visualizer Active"; 
             
             // Forcing initial audio calculation
-            calculateAudioLevels();
+            updateDataChannels(); // Changed to new function name
             
             return true;
         } catch (err) { 
@@ -231,24 +245,22 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
     
-    function calculateAudioLevels() {
-        if (!analyser || !freqData) {
-            console.warn("Audio analyzer not available");
-            return;
-        }
-        
-        try {
-            // Get both frequency and time domain data
-            analyser.getByteFrequencyData(freqData);
-            analyser.getByteTimeDomainData(timeData);
-            
-            // Check if we're getting any audio signal
-            const hasAudioSignal = freqData.some(value => value > 0);
-            if (!hasAudioSignal) {
-                console.warn("No audio signal detected - check microphone permissions and input");
-                
-                // Generate simulated data with musical patterns
-                const simulationTime = Date.now() / 1000;
+    function updateDataChannels() {
+        const currentTime = mainVisualizerCore?.state?.time ?? (performance.now() / 1000); // Get time for procedural
+
+        if (currentDataSource === 'microphone') {
+            if (!analyser || !freqData) {
+                // This is the existing mic failure / simulation logic
+                // Let's call this 'simulated_mic_failure' for clarity if we add it as a source
+                // For now, if mic is selected but not working, it will use this existing fallback.
+                // The console.warn will indicate this.
+                console.warn("Audio analyzer not available for 'microphone' source. Using fallback simulation.");
+                // ... (existing code for when !analyser)
+                // This part already updates analysisData.bassSmooth, etc.
+                // Ensure this part correctly updates analysisData.bass, mid, high too
+                // and then they are smoothed.
+                // The existing code:
+                const simulationTime = Date.now() / 1000; //simulationTime was defined inside this block
                 const notePattern = Math.floor(simulationTime % 8); // Cycle through 8 patterns
                 
                 // Simulate a series of musical notes
@@ -267,25 +279,58 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 
                 // Set simulated frequency band data
-                analysisData.bass = 0.2 + Math.random() * 0.3;
-                analysisData.mid = 0.1 + Math.random() * 0.3;
-                analysisData.high = 0.05 + Math.random() * 0.2;
+                // analysisData.bass = 0.2 + Math.random() * 0.3; // old
+                // analysisData.mid = 0.1 + Math.random() * 0.3; // old
+                // analysisData.high = 0.05 + Math.random() * 0.2; // old
+                const simMicData = Array(8).fill(0.0);
+                simMicData[0] = 0.2 + Math.random() * 0.3;
+                simMicData[1] = 0.1 + Math.random() * 0.3;
+                simMicData[2] = 0.05 + Math.random() * 0.2;
+                // Fill other channels with some random variations if desired
+                for (let i = 3; i < 8; i++) {
+                    simMicData[i] = Math.random() * 0.1;
+                }
+                analysisData.dataChannels = simMicData;
                 
                 // Apply smoothing
-                const alpha = 0.2;
-                analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-                analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-                analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+                const alpha = 0.2; // This alpha is from the original block
+                for(let i=0; i<8; i++) {
+                    analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+                }
+                analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+                analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+                analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
                 
                 // Update status occasionally
-                if (Math.random() < 0.01) {
+                if (statusDiv && Math.random() < 0.01) { // Added statusDiv check
                     statusDiv.textContent = `Simulated Note: ${analysisData.pitch.note}${analysisData.pitch.octave}`;
                 }
-                
-                return;
+                return; // Exit after handling this case.
             }
             
-            // Calculate frequency bands
+            // Original audio processing logic from calculateAudioLevels
+            try {
+                analyser.getByteFrequencyData(freqData);
+                analyser.getByteTimeDomainData(timeData);
+                // ... (rest of the original try block for audio processing)
+                 // Check if we're getting any audio signal - this was inside the original try, makes sense here
+                const hasAudioSignal = freqData.some(value => value > 0);
+                if (!hasAudioSignal) { // This case should ideally not be hit if the outer if(!analyser) is true, but good for robustness
+                    console.warn("No audio signal detected despite analyser being present - check microphone input");
+                    // Fallback to simulation similar to above, or just zero out
+                    analysisData.dataChannels.fill(0.0);
+                    // Smoothing will then decay to zero
+                    const alpha = 0.15;
+                    for(let i=0; i<8; i++) {
+                        analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+                    }
+                    analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+                    analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+                    analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
+                    return;
+                }
+
+                // Calculate frequency bands
             const bufferLength = analyser.frequencyBinCount;
             const nyquist = audioContext.sampleRate / 2;
             const bassBand = [20, 250], midBand = [250, 4000], highBand = [4000, 12000];
@@ -332,18 +377,24 @@ document.addEventListener('DOMContentLoaded', () => {
             analysisData.pitch = pitchData;
             
             // Update raw values
-            analysisData.bass = bassAvg;
-            analysisData.mid = midAvg;
-            analysisData.high = highAvg;
+            const currentMicData = Array(8).fill(0.0);
+            currentMicData[0] = bassAvg;
+            currentMicData[1] = midAvg;
+            currentMicData[2] = highAvg;
+            // Optionally fill other channels, e.g. currentMicData[3] = analysisData.dominantPitchValue;
+            analysisData.dataChannels = currentMicData;
             
             // Apply smoothing with proper alpha value
             const alpha = 0.15;
-            analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-            analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-            analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+            for(let i=0; i<8; i++) {
+                 analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+            }
+            analysisData.bassSmooth = analysisData.dataChannelsSmooth[0]; // Keep these for compatibility
+            analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+            analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
             
             // Log values occasionally for debugging
-            if (Math.random() < 0.01) {
+            if (statusDiv && Math.random() < 0.01) { // Added statusDiv check
                 const noteInfo = pitchData.frequency > 0 
                     ? `Note: ${pitchData.note}${pitchData.octave} (${pitchData.cents > 0 ? '+' : ''}${pitchData.cents}¢)` 
                     : 'No pitch detected';
@@ -353,19 +404,45 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Update status with pitch information
                 statusDiv.textContent = noteInfo;
             }
-        } catch (err) {
-            console.error("Error analyzing audio:", err);
-            
-            // Fallback to random values for testing
-            analysisData.bass = 0.1 + Math.random() * 0.3;
-            analysisData.mid = 0.2 + Math.random() * 0.3;
-            analysisData.high = 0.1 + Math.random() * 0.2;
-            
-            // Apply smoothing
-            const alpha = 0.2;
-            analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-            analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-            analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+            } catch (err) { // This is the original catch block for audio processing errors
+                console.error("Error analyzing audio:", err);
+                // Fallback to random values for testing
+                const errorMicData = Array(8).fill(0.0);
+                errorMicData[0] = 0.1 + Math.random() * 0.3;
+                errorMicData[1] = 0.2 + Math.random() * 0.3;
+                errorMicData[2] = 0.1 + Math.random() * 0.2;
+                analysisData.dataChannels = errorMicData;
+
+                // Apply smoothing
+                const alpha = 0.2; // This alpha is from the original catch
+                for(let i=0; i<8; i++) {
+                    analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+                }
+                analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+                analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+                analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
+            }
+        } else if (currentDataSource === 'procedural') {
+            const proceduralValues = generateProceduralData(currentTime);
+            analysisData.dataChannels = [...proceduralValues]; // raw values
+            const alpha = 0.15;
+            for(let i=0; i<8; i++) {
+                analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+            }
+            // Update bass/mid/high for compatibility if anything uses them by name
+            analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+            analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+            analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
+
+            if (statusDiv && Math.random() < 0.01) { // Update status occasionally
+                statusDiv.textContent = `Procedural Data: CH1=${analysisData.bassSmooth.toFixed(2)} CH2=${analysisData.midSmooth.toFixed(2)} CH3=${analysisData.highSmooth.toFixed(2)}`; // Keep showing first 3 for status
+            }
+        }
+        // Ensure that analysisData.pitch related objects are reset or handled if procedural data doesn't provide them
+        if (currentDataSource !== 'microphone') {
+            analysisData.pitch = { frequency: 0, note: 'N/A', octave: 0, cents: 0, inTune: false, strength: 0 };
+            analysisData.dominantPitch = 0;
+            analysisData.dominantPitchValue = 0;
         }
     }
 
@@ -373,25 +450,62 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const key in sliders) {
             const slider = sliders[key]; const display = valueDisplays[key];
             if (slider && display) {
-                const step = slider.step; const decimals = step.includes('.') ? step.split('.')[1].length : 0;
-                visualParams[key] = parseFloat(slider.value); display.textContent = visualParams[key].toFixed(decimals);
-                slider.addEventListener('input', () => {
+                if (key === 'dimension') {
+                    visualParams[key] = parseInt(slider.value, 10);
+                    display.textContent = visualParams[key]; // No toFixed for integers
+                    slider.addEventListener('input', () => {
+                        visualParams[key] = parseInt(slider.value, 10);
+                        display.textContent = visualParams[key];
+                        if(mainVisualizerCore) mainVisualizerCore.updateParameters({ [key]: visualParams[key] });
+                        // Slider progress for number input might need different handling or be omitted
+                        // For now, let's assume styled-input doesn't use the --slider-progress CSS var directly
+                    });
+                } else {
+                    const step = slider.step; const decimals = step.includes('.') ? step.split('.')[1].length : 0;
                     visualParams[key] = parseFloat(slider.value); display.textContent = visualParams[key].toFixed(decimals);
-                    if(key === 'lineThickness') { visualParams.shellWidth = visualParams.lineThickness*0.8; visualParams.tetraThickness = visualParams.lineThickness*1.1; if(mainVisualizerCore){ mainVisualizerCore.state._dirtyUniforms.add('u_shellWidth'); mainVisualizerCore.state._dirtyUniforms.add('u_tetraThickness');}}
-                    if(mainVisualizerCore) mainVisualizerCore.updateParameters({ [key]: visualParams[key] }); // Direct update
+                    slider.addEventListener('input', () => {
+                        visualParams[key] = parseFloat(slider.value); display.textContent = visualParams[key].toFixed(decimals);
+                        if(key === 'lineThickness') { visualParams.shellWidth = visualParams.lineThickness*0.8; visualParams.tetraThickness = visualParams.lineThickness*1.1; if(mainVisualizerCore){ mainVisualizerCore.state._dirtyUniforms.add('u_shellWidth'); mainVisualizerCore.state._dirtyUniforms.add('u_tetraThickness');}}
+                        if(mainVisualizerCore) mainVisualizerCore.updateParameters({ [key]: visualParams[key] }); // Direct update
+                        const wrapper = slider.closest('.slider-wrapper'); if(wrapper) { const min=parseFloat(slider.min), max=parseFloat(slider.max), val=visualParams[key]; const progress=(max===min)?0:(val-min)/(max-min); wrapper.style.setProperty('--slider-progress', Math.max(0,Math.min(1,progress)).toFixed(3)); }
+                    });
                     const wrapper = slider.closest('.slider-wrapper'); if(wrapper) { const min=parseFloat(slider.min), max=parseFloat(slider.max), val=visualParams[key]; const progress=(max===min)?0:(val-min)/(max-min); wrapper.style.setProperty('--slider-progress', Math.max(0,Math.min(1,progress)).toFixed(3)); }
-                });
-                 const wrapper = slider.closest('.slider-wrapper'); if(wrapper) { const min=parseFloat(slider.min), max=parseFloat(slider.max), val=visualParams[key]; const progress=(max===min)?0:(val-min)/(max-min); wrapper.style.setProperty('--slider-progress', Math.max(0,Math.min(1,progress)).toFixed(3)); }
+                }
             }
         }
         geometrySelect?.addEventListener('change', (e) => { mainVisualizerCore?.updateParameters({ geometryType: e.target.value }); });
         projectionSelect?.addEventListener('change', (e) => { mainVisualizerCore?.updateParameters({ projectionMethod: e.target.value }); });
+
+        const dataSourceSelect = document.getElementById('dataSourceSelect');
+        if (dataSourceSelect) {
+            dataSourceSelect.addEventListener('change', (e) => {
+                currentDataSource = e.target.value;
+                console.log(`Data source changed to: ${currentDataSource}`);
+                if (statusDiv) statusDiv.textContent = `Data source: ${currentDataSource}`;
+                // If switching to microphone and it's not set up, prompt user or attempt setup
+                if (currentDataSource === 'microphone' && (!audioContext || !analyser)) {
+                    if (reactivityIndicator) { // reactivityIndicator is already defined
+                        reactivityIndicator.textContent = "CLICK FOR MIC ACCESS";
+                        reactivityIndicator.style.borderColor = "var(--accent-color-primary)"; // Reset style
+                    }
+                    // Optionally, trigger the mic setup directly, or rely on user click
+                    // await setupAudio(); // This might be too aggressive
+                } else if (currentDataSource === 'procedural') {
+                    if (reactivityIndicator) {
+                        reactivityIndicator.textContent = "PROCEDURAL DATA";
+                        reactivityIndicator.style.borderColor = "#44ddff"; // Some other color
+                    }
+                }
+                // Reset smoothed values to prevent jumps from last source
+                analysisData.bassSmooth = 0; analysisData.midSmooth = 0; analysisData.highSmooth = 0;
+            });
+        }
         console.log("Controls initialized.");
     }
 
     function mainUpdateLoop() {
         if (!mainVisualizerCore?.state?.isRendering) return;
-        if (analyser) calculateAudioLevels();
+        updateDataChannels(); // Changed from calculateAudioLevels and removed if (analyser)
 
         // Calculate audio-influenced factors
         const dissonanceFactor = analysisData.midSmooth * analysisData.highSmooth * 2.0;
@@ -538,9 +652,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Calculate fully reactive parameters
         const effectiveParams = {
-            shellWidth: visualParams.shellWidth * (0.7 + analysisData.midSmooth * 1.8 + analysisData.bassSmooth * 0.4),
-            tetraThickness: visualParams.tetraThickness * (1.3 - analysisData.highSmooth * 0.9 + analysisData.bassSmooth * 0.3),
-            audioLevels: { bass: analysisData.bassSmooth, mid: analysisData.midSmooth, high: analysisData.highSmooth },
+            shellWidth: visualParams.shellWidth * (0.7 + analysisData.midSmooth * 1.8 + analysisData.bassSmooth * 0.4), // Uses smoothed named versions
+            tetraThickness: visualParams.tetraThickness * (1.3 - analysisData.highSmooth * 0.9 + analysisData.bassSmooth * 0.3), // Uses smoothed named versions
+            dataChannels: [...analysisData.dataChannelsSmooth], // Pass the full array
             
             // Add pitch-based color parameters
             hue: visualParams.hue,
@@ -595,14 +709,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     const clampedValue = Math.max(min, Math.min(max, value));
                     
                     // Update slider position visually (not the value to avoid feedback loops)
-                    const progress = (max === min) ? 0 : (clampedValue - min) / (max - min);
-                    const wrapper = slider.closest('.slider-wrapper');
-                    if (wrapper) {
-                        wrapper.style.setProperty('--slider-progress', Math.max(0, Math.min(1, progress)).toFixed(3));
+                    // For 'dimension' (number input), this progress update might not apply or needs adjustment
+                    if (slider.type === 'range') {
+                        const progress = (max === min) ? 0 : (clampedValue - min) / (max - min);
+                        const wrapper = slider.closest('.slider-wrapper');
+                        if (wrapper) {
+                            wrapper.style.setProperty('--slider-progress', Math.max(0, Math.min(1, progress)).toFixed(3));
+                        }
                     }
                     
                     // Update value display with the effective parameter value
-                    display.textContent = clampedValue.toFixed(decimals);
+                    if (key === 'dimension') {
+                        display.textContent = clampedValue; // No toFixed for integer
+                    } else {
+                        display.textContent = clampedValue.toFixed(decimals);
+                    }
                     
                     // Add visual effects to sliders based on audio analysis
                     const controlGroup = slider.closest('.control-group');
@@ -824,4 +945,82 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log("Initialization complete - visualization running");
     }
     initialize();
+
+    // Instantiate VisualizerController after mainVisualizerCore is created
+    let vizController = null;
+    if (mainVisualizerCore && mainVisualizerCore.gl) {
+        vizController = new VisualizerController(mainVisualizerCore);
+    } else {
+        console.error("Failed to initialize HypercubeCore, VisualizerController cannot be created.");
+    }
+
+    // Mock PMK Input Handler
+    const commandInput = document.getElementById('pmkCommandInput');
+    const sendCommandButton = document.getElementById('sendPmkCommand');
+
+    if (sendCommandButton && commandInput && vizController) {
+        sendCommandButton.addEventListener('click', () => {
+            const commandStr = commandInput.value.trim();
+            if (!commandStr) return;
+
+            try {
+                const commandObj = JSON.parse(commandStr);
+                if (!commandObj.command || !commandObj.payload === undefined) { // Check payload existence
+                    console.error("Invalid command format. Need 'command' and 'payload'.", commandObj);
+                    if(statusDiv) statusDiv.textContent = "Error: Invalid command format.";
+                    return;
+                }
+
+                console.log("Attempting command:", commandObj.command, "with payload:", commandObj.payload);
+                if(statusDiv) statusDiv.textContent = `Cmd: ${commandObj.command}`;
+
+                switch (commandObj.command) {
+                    case 'setPolytope':
+                        if (typeof commandObj.payload === 'string') {
+                            vizController.setPolytope(commandObj.payload);
+                        } else if (typeof commandObj.payload === 'object' && commandObj.payload.name) {
+                            vizController.setPolytope(commandObj.payload.name, commandObj.payload.styleParams);
+                        } else {
+                             console.error("Invalid payload for setPolytope. Expected string or {name, styleParams}.");
+                             if(statusDiv) statusDiv.textContent = "Error: Invalid setPolytope payload.";
+                        }
+                        break;
+                    case 'setVisualStyle':
+                        if (typeof commandObj.payload === 'object') {
+                            vizController.setVisualStyle(commandObj.payload);
+                        } else {
+                            console.error("Invalid payload for setVisualStyle. Expected object.");
+                            if(statusDiv) statusDiv.textContent = "Error: Invalid setVisualStyle payload.";
+                        }
+                        break;
+                    case 'updateData':
+                        if (Array.isArray(commandObj.payload)) {
+                            vizController.updateData(commandObj.payload);
+                        } else {
+                             console.error("Invalid payload for updateData. Expected array of 8 numbers.");
+                             if(statusDiv) statusDiv.textContent = "Error: Invalid updateData payload.";
+                        }
+                        break;
+                    case 'setSpecificUniform':
+                        if (commandObj.payload && commandObj.payload.name && commandObj.payload.hasOwnProperty('value')) {
+                            vizController.setSpecificUniform(commandObj.payload.name, commandObj.payload.value);
+                        } else {
+                            console.error("Invalid payload for setSpecificUniform. Expected {name, value}.");
+                            if(statusDiv) statusDiv.textContent = "Error: Invalid setSpecificUniform payload.";
+                        }
+                        break;
+                    default:
+                        console.warn("Unknown command:", commandObj.command);
+                        if(statusDiv) statusDiv.textContent = `Error: Unknown command ${commandObj.command}`;
+                }
+                commandInput.value = ''; // Clear input after processing
+            } catch (e) {
+                console.error("Error processing command:", e);
+                if(statusDiv) statusDiv.textContent = `Error: ${e.message}`;
+            }
+        });
+    } else {
+        if (!vizController) console.warn("VisualizerController not initialized, PMK command input disabled.");
+        else console.warn("PMK command input elements not found in HTML.");
+    }
 });
