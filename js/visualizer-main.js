@@ -473,8 +473,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         }
-        geometrySelect?.addEventListener('change', (e) => { mainVisualizerCore?.updateParameters({ geometryType: e.target.value }); });
-        projectionSelect?.addEventListener('change', (e) => { mainVisualizerCore?.updateParameters({ projectionMethod: e.target.value }); });
+        // Update geometrySelect and projectionSelect to use vizController
+        geometrySelect?.addEventListener('change', (e) => {
+            if (vizController) {
+                vizController.setPolytope(e.target.value);
+            } else {
+                mainVisualizerCore?.updateParameters({ geometryType: e.target.value });
+            }
+        });
+        projectionSelect?.addEventListener('change', (e) => {
+            if (vizController) {
+                vizController.setVisualStyle({ core: { projectionMethod: e.target.value } });
+            } else {
+                mainVisualizerCore?.updateParameters({ projectionMethod: e.target.value });
+            }
+        });
 
         const dataSourceSelect = document.getElementById('dataSourceSelect');
         if (dataSourceSelect) {
@@ -877,7 +890,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Create main visualizer core with error callback
             statusDiv.textContent = "Creating visualization core...";
             mainVisualizerCore = new HypercubeCore(canvas, shaderManager, {
-                 geometryType: geometrySelect?.value ?? 'hypercube',
+                 geometryType: 'hypercube', // MODIFIED for testing SDF geometries
                  projectionMethod: projectionSelect?.value ?? 'perspective',
                  ...visualParams,
                  callbacks: { 
@@ -949,10 +962,190 @@ document.addEventListener('DOMContentLoaded', () => {
     // Instantiate VisualizerController after mainVisualizerCore is created
     let vizController = null;
     if (mainVisualizerCore && mainVisualizerCore.gl) {
-        vizController = new VisualizerController(mainVisualizerCore);
+        const initialDataChannelDef = {
+            uboChannels: [
+                { snapshotField: 'audio_bass', uboChannelIndex: 0, defaultValue: 0.0 },
+                { snapshotField: 'audio_mid', uboChannelIndex: 1, defaultValue: 0.0 },
+                { snapshotField: 'audio_high', uboChannelIndex: 2, defaultValue: 0.0 },
+                { snapshotField: 'time_seconds', uboChannelIndex: 3, defaultValue: 0.0 },
+                { snapshotField: 'pitch_frequency', uboChannelIndex: 4, defaultValue: 0.0 },
+                { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 }, // Existing channel 5
+                // For testing, we will add a new specific mapping for channel 5 if the above is already used.
+                // Let's assume 'pitch_strength' is okay, or if we need a dedicated test, we'd ensure this index is unique for 'test_ubo_channel_5'.
+                // For clarity, let's add a new specific one, assuming channel 5 might be used by pitch_strength.
+                // Let's use channel 8 (0-indexed) for test_ubo_channel_5, if available.
+                // Rechecking initialDataChannelDef, channels 0-7 are used. So let's use channel 8 for test.
+                { snapshotField: 'test_ubo_channel_5_effect', uboChannelIndex: 8, defaultValue: 0.0 }, // Changed to 8 for clarity
+                { snapshotField: 'energy_factor', uboChannelIndex: 6, defaultValue: 0.0 },
+                { snapshotField: 'dissonance_factor', uboChannelIndex: 7, defaultValue: 0.0 }
+            ],
+            directParams: [
+                // visualParams are reactive based on audio, so mapping them directly from a snapshot
+                // might conflict with the reactive system unless the snapshot is the source of truth for them.
+                // For now, let's assume UI/sliders update visualParams, which then can be part of snapshot.
+                { snapshotField: 'ui_rotationSpeed', coreStateName: 'rotationSpeed', defaultValue: visualParams.rotationSpeed },
+                { snapshotField: 'ui_morphFactor', coreStateName: 'morphFactor', defaultValue: visualParams.morphFactor },
+                { snapshotField: 'ui_glitchIntensity', coreStateName: 'glitchIntensity', defaultValue: visualParams.glitchIntensity }
+            ]
+        };
+        // Example baseParameters (could be loaded from a config file or UI preset)
+        const baseParams = {
+            // core state
+            colorShift: 0.05,
+            patternIntensity: 1.2,
+            // projection params
+            proj_perspective_baseDistance: 2.8,
+            // geometry params for hypercube (if it's the default)
+            geom_hypercube_baseSpeedFactor: 1.1,
+            // lattice params (if fullscreenlattice is used)
+            lattice_edgeLineWidth: 0.025
+        };
+
+        vizController = new VisualizerController(mainVisualizerCore, {
+            dataChannelDefinition: initialDataChannelDef,
+            baseParameters: baseParams
+        });
+
     } else {
         console.error("Failed to initialize HypercubeCore, VisualizerController cannot be created.");
     }
+
+    // Update mainUpdateLoop to use vizController.updateData with a snapshot
+    function mainUpdateLoop() {
+        if (!mainVisualizerCore?.state?.isRendering || !vizController) return; // Added !vizController check
+        updateDataChannels();
+
+        // ... (all the reactive calculations for effectiveParams remain the same) ...
+        // Calculate audio-influenced factors
+        const dissonanceFactor = analysisData.midSmooth * analysisData.highSmooth * 2.0;
+        const energyFactor = (analysisData.bassSmooth + analysisData.midSmooth) * 0.5;
+        const transientFactor = Math.max(0, analysisData.highSmooth - lastEnergy) * 2.0;
+        lastEnergy = analysisData.highSmooth * 0.8;
+
+        // Log core state for lattice for verification (previous test)
+        // if (mainVisualizerCore && mainVisualizerCore.state.geometryType === 'fullscreenlattice') {
+        //     console.log("Core State for Lattice:", {
+        //         morph: mainVisualizerCore.state.morphFactor,
+        //         glitch: mainVisualizerCore.state.glitchIntensity,
+        //         grid: mainVisualizerCore.state.gridDensity_lattice,
+        //         lattice_edgeLineWidth: mainVisualizerCore.state.lattice_edgeLineWidth
+        //     });
+        // }
+
+        // Logging for HypercubeGeometry and Projection (new test)
+        if (mainVisualizerCore && mainVisualizerCore.state.geometryType === 'hypercube') {
+            console.log("Hypercube & Projection State:", {
+                geom_wCoord_pLengthFactor: mainVisualizerCore.state.geom_hypercube_wCoord_pLengthFactor,
+                proj_persp_baseDistance: mainVisualizerCore.state.proj_perspective_baseDistance,
+                audio_bass_to_UBO0: currentDataSnapshot.audio_bass, // Example of data sent to UBO
+                audio_mid_to_UBO1: currentDataSnapshot.audio_mid    // Example of data sent to UBO
+            });
+        }
+
+        let pitchHue = 0.5;
+        let pitchSaturation = 0.8;
+        let pitchBrightness = 0.9;
+        let tuningOffset = 0;
+
+        if (analysisData.pitch.frequency > 0) {
+            const noteMap = {'C': 0, 'C#': 0.083, 'D': 0.167, 'D#': 0.25, 'E': 0.333,
+                             'F': 0.417, 'F#': 0.5, 'G': 0.583, 'G#': 0.667, 'A': 0.75,
+                             'A#': 0.833, 'B': 0.917};
+            const baseHue = noteMap[analysisData.pitch.note] || 0;
+            pitchHue = (baseHue + (analysisData.pitch.octave % 3) * 0.33) % 1.0;
+            pitchSaturation = 0.5 + analysisData.pitch.strength * 0.5;
+            const octaveOffset = Math.max(0, Math.min(1, (analysisData.pitch.octave - 2) / 5));
+            pitchBrightness = 0.7 + octaveOffset * 0.3;
+            if (!analysisData.pitch.inTune) {
+                tuningOffset = analysisData.pitch.cents / 50.0;
+            }
+        } else {
+            pitchHue = (Date.now() * 0.0001) % 1.0;
+            pitchSaturation = 0.5 + energyFactor * 0.5;
+            pitchBrightness = 0.7 + analysisData.highSmooth * 0.3;
+        }
+
+        visualParams.hue = pitchHue;
+        visualParams.saturation = pitchSaturation;
+        visualParams.brightness = pitchBrightness;
+        visualParams.rgbOffset = tuningOffset;
+
+        const paramMappings = {
+            morphFactor: { factor: analysisData.pitch.frequency > 0 ? 0.4 + (analysisData.pitch.octave / 6) * 0.8 + transientFactor * 0.5 : 0.8 + analysisData.midSmooth * 1.8 + transientFactor * 0.7, primary: 'pitch', secondary: 'transient', pulseThreshold: 0.3 },
+            dimension: { factor: analysisData.pitch.frequency > 0 ? 3.0 + (noteMap[analysisData.pitch.note] || 0) * 2.0 : 0.65 + analysisData.bassSmooth * 0.6 + analysisData.midSmooth * 0.3, primary: 'pitch', secondary: 'bass', pulseThreshold: 0.4 },
+            rotationSpeed: { factor: analysisData.pitch.frequency > 0 ? 0.2 + (analysisData.pitch.octave / 8) * 2.0 + analysisData.midSmooth * 1.0 : 0.8 + analysisData.midSmooth * 3.0 + analysisData.highSmooth * 2.0,  primary: 'pitch', secondary: 'mid', pulseThreshold: 0.25 },
+            gridDensity: { factor: analysisData.pitch.frequency > 0 ? 4.0 + ((analysisData.pitch.octave % 3) * 3.0) + analysisData.bassSmooth * 6.0 : 0.5 + analysisData.bassSmooth * 2.2 + transientFactor * 0.7, primary: 'pitch', secondary: 'bass', pulseThreshold: 0.4 },
+            lineThickness: { factor: analysisData.pitch.frequency > 0 ? 1.5 - ((analysisData.pitch.octave - 2) / 6) * 0.8 : 1.5 - analysisData.highSmooth * 1.0 + analysisData.bassSmooth * 0.3, primary: 'pitch', secondary: 'high', pulseThreshold: 0.5, inverse: true },
+            patternIntensity: { factor: analysisData.pitch.frequency > 0 ? 0.7 + Math.abs(analysisData.pitch.cents / 50.0) * 1.5 + transientFactor * 0.5 : 0.8 + analysisData.midSmooth * 1.5 + transientFactor * 1.1, primary: 'tuning', secondary: 'transient', pulseThreshold: 0.25 },
+            universeModifier: { factor: analysisData.pitch.frequency > 0 ? 0.5 + (noteMap[analysisData.pitch.note] || 0) * 1.5 : 0.7 + analysisData.bassSmooth * 1.2 + dissonanceFactor * 0.4, primary: 'note', secondary: 'bass', pulseThreshold: 0.4 },
+            glitchIntensity: { factor: analysisData.pitch.frequency > 0 ? 0.01 + (analysisData.pitch.inTune ? 0 : (Math.abs(analysisData.pitch.cents) / 50.0) * 0.08) : 0.02 + analysisData.highSmooth * 0.08 + transientFactor * 0.1, primary: 'tuning', secondary: 'transient', pulseThreshold: 0.2, additive: true },
+            colorShift: { factor: analysisData.pitch.frequency > 0 ? analysisData.pitch.cents / 50.0 : 1.2 + (dissonanceFactor * 1.5) + (energyFactor - 0.1) * 0.8, primary: 'tuning', secondary: 'energy', pulseThreshold: 0.3, bipolar: true }
+        };
+
+        const noteMap = {'C': 0, 'C#': 0.083, 'D': 0.167, 'D#': 0.25, 'E': 0.333, 'F': 0.417, 'F#': 0.5, 'G': 0.583, 'G#': 0.667, 'A': 0.75, 'A#': 0.833, 'B': 0.917};
+
+        const effectiveParams = {
+            shellWidth: visualParams.shellWidth * (0.7 + analysisData.midSmooth * 1.8 + analysisData.bassSmooth * 0.4),
+            tetraThickness: visualParams.tetraThickness * (1.3 - analysisData.highSmooth * 0.9 + analysisData.bassSmooth * 0.3),
+            // dataChannels: [...analysisData.dataChannelsSmooth], // This will be handled by the snapshot via vizController
+            hue: visualParams.hue, saturation: visualParams.saturation, brightness: visualParams.brightness, rgbOffset: visualParams.rgbOffset,
+            projectionDistance: analysisData.pitch.frequency > 0 ? 2.0 + (analysisData.pitch.octave - 3) * 0.5 : 2.0 + analysisData.bassSmooth * 1.0,
+            projectionAngle: analysisData.pitch.frequency > 0 ? (noteMap[analysisData.pitch.note] || 0) * Math.PI * 2 : (Date.now() * 0.0005) % (Math.PI * 2)
+        };
+
+        for (const key in paramMappings) {
+            const mapping = paramMappings[key];
+            if (mapping.additive) {
+                effectiveParams[key] = visualParams[key] + (visualParams[key] * analysisData.highSmooth * 0.2) + (transientFactor * 0.3);
+            } else if (mapping.bipolar) {
+                effectiveParams[key] = visualParams[key] + (dissonanceFactor - 0.1) * 0.8 + (energyFactor - 0.2) * 0.5;
+            } else {
+                effectiveParams[key] = visualParams[key] * mapping.factor;
+            }
+        }
+
+        // Update UI sliders (remains the same)
+        for (const key in sliders) { /* ... existing slider update logic ... */ }
+
+        // Clamp values (remains the same)
+        effectiveParams.morphFactor = Math.max(0, Math.min(1.5, effectiveParams.morphFactor));
+        // ... other clamps ...
+        effectiveParams.colorShift = Math.max(-1.0, Math.min(1.0, effectiveParams.colorShift));
+
+        // Instead of mainVisualizerCore.updateParameters(effectiveParams);
+        // We construct the snapshot and send it to vizController
+        const currentDataSnapshot = {
+            audio_bass: analysisData.bassSmooth,
+            audio_mid: analysisData.midSmooth,
+            audio_high: analysisData.highSmooth,
+            time_seconds: mainVisualizerCore.state.time,
+            pitch_frequency: analysisData.pitch.frequency,
+            pitch_strength: analysisData.pitch.strength,
+            energy_factor: energyFactor,
+            dissonance_factor: dissonanceFactor,
+            // Include UI-driven parameters if they should be part of snapshot for direct mapping
+            ui_rotationSpeed: visualParams.rotationSpeed,
+            ui_morphFactor: visualParams.morphFactor,
+            ui_glitchIntensity: visualParams.glitchIntensity
+            // Add any other values from 'effectiveParams' that are defined in directParams or uboChannels
+            // For example, if 'glitchIntensity' is a directParam, it would be:
+            // visual_glitchIntensity: effectiveParams.glitchIntensity
+            // (assuming snapshotField is 'visual_glitchIntensity')
+            test_ubo_channel_5_effect: (Math.sin(mainVisualizerCore.state.time * 2.0) + 1.0) * 0.25 // Pulsating value for UBO channel 8
+        };
+        // Also, add any other effectiveParams that are meant to be directly controlled but are calculated reactively
+        // This part needs careful consideration of what 'effectiveParams' should override vs. what snapshot provides.
+        // For now, we assume snapshot provides raw data, and HypercubeCore state (from sliders/UI) is separate.
+        // The directParams in initialDataChannelDef like 'ui_rotationSpeed' are from 'visualParams' (sliders).
+        // The 'effectiveParams' are for parameters NOT directly mapped from snapshot but reactively calculated.
+        // So, we should still call updateParameters for these reactively calculated ones.
+        mainVisualizerCore.updateParameters(effectiveParams);
+        // And then send the specific snapshot data
+        vizController.updateData(currentDataSnapshot);
+
+        requestAnimationFrame(mainUpdateLoop);
+    }
+
 
     // Mock PMK Input Handler
     const commandInput = document.getElementById('pmkCommandInput');
@@ -994,11 +1187,19 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         break;
                     case 'updateData':
-                        if (Array.isArray(commandObj.payload)) {
+                        if (typeof commandObj.payload === 'object' && commandObj.payload !== null && !Array.isArray(commandObj.payload)) {
                             vizController.updateData(commandObj.payload);
                         } else {
-                             console.error("Invalid payload for updateData. Expected array of 8 numbers.");
-                             if(statusDiv) statusDiv.textContent = "Error: Invalid updateData payload.";
+                             console.error("Invalid payload for updateData. Expected a JSON object.");
+                             if(statusDiv) statusDiv.textContent = "Error: Invalid updateData payload (must be JSON object).";
+                        }
+                        break;
+                    case 'setDataMappingRules': // New command
+                        if (typeof commandObj.payload === 'object' && commandObj.payload !== null) {
+                            vizController.setDataMappingRules(commandObj.payload);
+                        } else {
+                            console.error("Invalid payload for setDataMappingRules. Expected object.");
+                            if(statusDiv) statusDiv.textContent = "Error: Invalid setDataMappingRules payload.";
                         }
                         break;
                     case 'setSpecificUniform':
