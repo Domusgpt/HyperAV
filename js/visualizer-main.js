@@ -29,6 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const valueDisplays = {}; for (const key in sliders) { if(sliders[key]) valueDisplays[key] = document.getElementById(`${sliders[key].id}-value`); }
     const geometrySelect = document.getElementById('geometryType'); const projectionSelect = document.getElementById('projectionMethod');
     const reactivityIndicator = document.querySelector('.reactivity-indicator');
+    let currentDataSource = 'microphone'; // Added state variable
     
     // Add click handler to reactivity indicator to manually trigger mic permission
     if (reactivityIndicator) {
@@ -100,6 +101,13 @@ document.addEventListener('DOMContentLoaded', () => {
     let lastEnergy = 0;       // For transient smoothing
     let lastPitch = 0;        // For pitch changes detection
 
+    function generateProceduralData(time) {
+        const ch1 = 0.5 + 0.5 * Math.sin(time * 0.5); // Slow sine wave
+        const ch2 = 0.5 + 0.5 * Math.sin(time * 1.2); // Medium sine wave
+        const ch3 = 0.5 + 0.5 * Math.sin(time * 2.5); // Faster sine wave
+        return { ch1, ch2, ch3 };
+    }
+
     async function setupAudio() {
         try {
             // Create audio context with fallback
@@ -151,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
             statusDiv.textContent = "Mic OK - Visualizer Active"; 
             
             // Forcing initial audio calculation
-            calculateAudioLevels();
+            updateDataChannels(); // Changed to new function name
             
             return true;
         } catch (err) { 
@@ -231,24 +239,22 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
     
-    function calculateAudioLevels() {
-        if (!analyser || !freqData) {
-            console.warn("Audio analyzer not available");
-            return;
-        }
-        
-        try {
-            // Get both frequency and time domain data
-            analyser.getByteFrequencyData(freqData);
-            analyser.getByteTimeDomainData(timeData);
-            
-            // Check if we're getting any audio signal
-            const hasAudioSignal = freqData.some(value => value > 0);
-            if (!hasAudioSignal) {
-                console.warn("No audio signal detected - check microphone permissions and input");
-                
-                // Generate simulated data with musical patterns
-                const simulationTime = Date.now() / 1000;
+    function updateDataChannels() {
+        const currentTime = mainVisualizerCore?.state?.time ?? (performance.now() / 1000); // Get time for procedural
+
+        if (currentDataSource === 'microphone') {
+            if (!analyser || !freqData) {
+                // This is the existing mic failure / simulation logic
+                // Let's call this 'simulated_mic_failure' for clarity if we add it as a source
+                // For now, if mic is selected but not working, it will use this existing fallback.
+                // The console.warn will indicate this.
+                console.warn("Audio analyzer not available for 'microphone' source. Using fallback simulation.");
+                // ... (existing code for when !analyser)
+                // This part already updates analysisData.bassSmooth, etc.
+                // Ensure this part correctly updates analysisData.bass, mid, high too
+                // and then they are smoothed.
+                // The existing code:
+                const simulationTime = Date.now() / 1000; //simulationTime was defined inside this block
                 const notePattern = Math.floor(simulationTime % 8); // Cycle through 8 patterns
                 
                 // Simulate a series of musical notes
@@ -272,20 +278,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 analysisData.high = 0.05 + Math.random() * 0.2;
                 
                 // Apply smoothing
-                const alpha = 0.2;
+                const alpha = 0.2; // This alpha is from the original block
                 analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
                 analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
                 analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
                 
                 // Update status occasionally
-                if (Math.random() < 0.01) {
+                if (statusDiv && Math.random() < 0.01) { // Added statusDiv check
                     statusDiv.textContent = `Simulated Note: ${analysisData.pitch.note}${analysisData.pitch.octave}`;
                 }
-                
-                return;
+                return; // Exit after handling this case.
             }
             
-            // Calculate frequency bands
+            // Original audio processing logic from calculateAudioLevels
+            try {
+                analyser.getByteFrequencyData(freqData);
+                analyser.getByteTimeDomainData(timeData);
+                // ... (rest of the original try block for audio processing)
+                 // Check if we're getting any audio signal - this was inside the original try, makes sense here
+                const hasAudioSignal = freqData.some(value => value > 0);
+                if (!hasAudioSignal) { // This case should ideally not be hit if the outer if(!analyser) is true, but good for robustness
+                    console.warn("No audio signal detected despite analyser being present - check microphone input");
+                    // Fallback to simulation similar to above, or just zero out
+                    analysisData.bass = 0; analysisData.mid = 0; analysisData.high = 0;
+                    // Smoothing will then decay to zero
+                    const alpha = 0.15;
+                    analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
+                    analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
+                    analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+                    return;
+                }
+
+                // Calculate frequency bands
             const bufferLength = analyser.frequencyBinCount;
             const nyquist = audioContext.sampleRate / 2;
             const bassBand = [20, 250], midBand = [250, 4000], highBand = [4000, 12000];
@@ -343,7 +367,7 @@ document.addEventListener('DOMContentLoaded', () => {
             analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
             
             // Log values occasionally for debugging
-            if (Math.random() < 0.01) {
+            if (statusDiv && Math.random() < 0.01) { // Added statusDiv check
                 const noteInfo = pitchData.frequency > 0 
                     ? `Note: ${pitchData.note}${pitchData.octave} (${pitchData.cents > 0 ? '+' : ''}${pitchData.cents}¢)` 
                     : 'No pitch detected';
@@ -353,19 +377,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Update status with pitch information
                 statusDiv.textContent = noteInfo;
             }
-        } catch (err) {
-            console.error("Error analyzing audio:", err);
-            
-            // Fallback to random values for testing
-            analysisData.bass = 0.1 + Math.random() * 0.3;
-            analysisData.mid = 0.2 + Math.random() * 0.3;
-            analysisData.high = 0.1 + Math.random() * 0.2;
-            
-            // Apply smoothing
-            const alpha = 0.2;
+            } catch (err) { // This is the original catch block for audio processing errors
+                console.error("Error analyzing audio:", err);
+                // Fallback to random values for testing
+                analysisData.bass = 0.1 + Math.random() * 0.3;
+                analysisData.mid = 0.2 + Math.random() * 0.3;
+                analysisData.high = 0.1 + Math.random() * 0.2;
+
+                // Apply smoothing
+                const alpha = 0.2; // This alpha is from the original catch
+                analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
+                analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
+                analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+            }
+        } else if (currentDataSource === 'procedural') {
+            const proceduralValues = generateProceduralData(currentTime);
+            analysisData.bass = proceduralValues.ch1;
+            analysisData.mid = proceduralValues.ch2;
+            analysisData.high = proceduralValues.ch3;
+            // Apply smoothing (optional, but good for consistency with audio path)
+            const alpha = 0.15; // Same alpha as in audio path
             analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
             analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
             analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+
+            if (statusDiv && Math.random() < 0.01) { // Update status occasionally
+                statusDiv.textContent = `Procedural Data: CH1=${analysisData.bassSmooth.toFixed(2)} CH2=${analysisData.midSmooth.toFixed(2)} CH3=${analysisData.highSmooth.toFixed(2)}`;
+            }
+        }
+        // Ensure that analysisData.pitch related objects are reset or handled if procedural data doesn't provide them
+        if (currentDataSource !== 'microphone') {
+            analysisData.pitch = { frequency: 0, note: 'N/A', octave: 0, cents: 0, inTune: false, strength: 0 };
+            analysisData.dominantPitch = 0;
+            analysisData.dominantPitchValue = 0;
         }
     }
 
@@ -373,25 +417,62 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const key in sliders) {
             const slider = sliders[key]; const display = valueDisplays[key];
             if (slider && display) {
-                const step = slider.step; const decimals = step.includes('.') ? step.split('.')[1].length : 0;
-                visualParams[key] = parseFloat(slider.value); display.textContent = visualParams[key].toFixed(decimals);
-                slider.addEventListener('input', () => {
+                if (key === 'dimension') {
+                    visualParams[key] = parseInt(slider.value, 10);
+                    display.textContent = visualParams[key]; // No toFixed for integers
+                    slider.addEventListener('input', () => {
+                        visualParams[key] = parseInt(slider.value, 10);
+                        display.textContent = visualParams[key];
+                        if(mainVisualizerCore) mainVisualizerCore.updateParameters({ [key]: visualParams[key] });
+                        // Slider progress for number input might need different handling or be omitted
+                        // For now, let's assume styled-input doesn't use the --slider-progress CSS var directly
+                    });
+                } else {
+                    const step = slider.step; const decimals = step.includes('.') ? step.split('.')[1].length : 0;
                     visualParams[key] = parseFloat(slider.value); display.textContent = visualParams[key].toFixed(decimals);
-                    if(key === 'lineThickness') { visualParams.shellWidth = visualParams.lineThickness*0.8; visualParams.tetraThickness = visualParams.lineThickness*1.1; if(mainVisualizerCore){ mainVisualizerCore.state._dirtyUniforms.add('u_shellWidth'); mainVisualizerCore.state._dirtyUniforms.add('u_tetraThickness');}}
-                    if(mainVisualizerCore) mainVisualizerCore.updateParameters({ [key]: visualParams[key] }); // Direct update
+                    slider.addEventListener('input', () => {
+                        visualParams[key] = parseFloat(slider.value); display.textContent = visualParams[key].toFixed(decimals);
+                        if(key === 'lineThickness') { visualParams.shellWidth = visualParams.lineThickness*0.8; visualParams.tetraThickness = visualParams.lineThickness*1.1; if(mainVisualizerCore){ mainVisualizerCore.state._dirtyUniforms.add('u_shellWidth'); mainVisualizerCore.state._dirtyUniforms.add('u_tetraThickness');}}
+                        if(mainVisualizerCore) mainVisualizerCore.updateParameters({ [key]: visualParams[key] }); // Direct update
+                        const wrapper = slider.closest('.slider-wrapper'); if(wrapper) { const min=parseFloat(slider.min), max=parseFloat(slider.max), val=visualParams[key]; const progress=(max===min)?0:(val-min)/(max-min); wrapper.style.setProperty('--slider-progress', Math.max(0,Math.min(1,progress)).toFixed(3)); }
+                    });
                     const wrapper = slider.closest('.slider-wrapper'); if(wrapper) { const min=parseFloat(slider.min), max=parseFloat(slider.max), val=visualParams[key]; const progress=(max===min)?0:(val-min)/(max-min); wrapper.style.setProperty('--slider-progress', Math.max(0,Math.min(1,progress)).toFixed(3)); }
-                });
-                 const wrapper = slider.closest('.slider-wrapper'); if(wrapper) { const min=parseFloat(slider.min), max=parseFloat(slider.max), val=visualParams[key]; const progress=(max===min)?0:(val-min)/(max-min); wrapper.style.setProperty('--slider-progress', Math.max(0,Math.min(1,progress)).toFixed(3)); }
+                }
             }
         }
         geometrySelect?.addEventListener('change', (e) => { mainVisualizerCore?.updateParameters({ geometryType: e.target.value }); });
         projectionSelect?.addEventListener('change', (e) => { mainVisualizerCore?.updateParameters({ projectionMethod: e.target.value }); });
+
+        const dataSourceSelect = document.getElementById('dataSourceSelect');
+        if (dataSourceSelect) {
+            dataSourceSelect.addEventListener('change', (e) => {
+                currentDataSource = e.target.value;
+                console.log(`Data source changed to: ${currentDataSource}`);
+                if (statusDiv) statusDiv.textContent = `Data source: ${currentDataSource}`;
+                // If switching to microphone and it's not set up, prompt user or attempt setup
+                if (currentDataSource === 'microphone' && (!audioContext || !analyser)) {
+                    if (reactivityIndicator) { // reactivityIndicator is already defined
+                        reactivityIndicator.textContent = "CLICK FOR MIC ACCESS";
+                        reactivityIndicator.style.borderColor = "var(--accent-color-primary)"; // Reset style
+                    }
+                    // Optionally, trigger the mic setup directly, or rely on user click
+                    // await setupAudio(); // This might be too aggressive
+                } else if (currentDataSource === 'procedural') {
+                    if (reactivityIndicator) {
+                        reactivityIndicator.textContent = "PROCEDURAL DATA";
+                        reactivityIndicator.style.borderColor = "#44ddff"; // Some other color
+                    }
+                }
+                // Reset smoothed values to prevent jumps from last source
+                analysisData.bassSmooth = 0; analysisData.midSmooth = 0; analysisData.highSmooth = 0;
+            });
+        }
         console.log("Controls initialized.");
     }
 
     function mainUpdateLoop() {
         if (!mainVisualizerCore?.state?.isRendering) return;
-        if (analyser) calculateAudioLevels();
+        updateDataChannels(); // Changed from calculateAudioLevels and removed if (analyser)
 
         // Calculate audio-influenced factors
         const dissonanceFactor = analysisData.midSmooth * analysisData.highSmooth * 2.0;
@@ -540,7 +621,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const effectiveParams = {
             shellWidth: visualParams.shellWidth * (0.7 + analysisData.midSmooth * 1.8 + analysisData.bassSmooth * 0.4),
             tetraThickness: visualParams.tetraThickness * (1.3 - analysisData.highSmooth * 0.9 + analysisData.bassSmooth * 0.3),
-            audioLevels: { bass: analysisData.bassSmooth, mid: analysisData.midSmooth, high: analysisData.highSmooth },
+            dataChannels: { ch1: analysisData.bassSmooth, ch2: analysisData.midSmooth, ch3: analysisData.highSmooth },
             
             // Add pitch-based color parameters
             hue: visualParams.hue,
@@ -595,14 +676,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     const clampedValue = Math.max(min, Math.min(max, value));
                     
                     // Update slider position visually (not the value to avoid feedback loops)
-                    const progress = (max === min) ? 0 : (clampedValue - min) / (max - min);
-                    const wrapper = slider.closest('.slider-wrapper');
-                    if (wrapper) {
-                        wrapper.style.setProperty('--slider-progress', Math.max(0, Math.min(1, progress)).toFixed(3));
+                    // For 'dimension' (number input), this progress update might not apply or needs adjustment
+                    if (slider.type === 'range') {
+                        const progress = (max === min) ? 0 : (clampedValue - min) / (max - min);
+                        const wrapper = slider.closest('.slider-wrapper');
+                        if (wrapper) {
+                            wrapper.style.setProperty('--slider-progress', Math.max(0, Math.min(1, progress)).toFixed(3));
+                        }
                     }
                     
                     // Update value display with the effective parameter value
-                    display.textContent = clampedValue.toFixed(decimals);
+                    if (key === 'dimension') {
+                        display.textContent = clampedValue; // No toFixed for integer
+                    } else {
+                        display.textContent = clampedValue.toFixed(decimals);
+                    }
                     
                     // Add visual effects to sliders based on audio analysis
                     const controlGroup = slider.closest('.control-group');

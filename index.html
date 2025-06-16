@@ -59,11 +59,20 @@
     <div class="controls-container">
         <div class="selectors">
              <div>
+                <label for="dataSourceSelect">Data Source:</label>
+                <select id="dataSourceSelect">
+                    <option value="microphone" selected>Microphone</option>
+                    <option value="procedural">Procedural Sine</option>
+                    <!-- <option value="simulated_mic_failure">Simulated Random</option> -->
+                </select>
+            </div>
+            <div>
                 <label for="geometryType">Geometry:</label>
                 <select id="geometryType">
                     <option value="hypercube" selected>Hypercube</option>
                     <option value="hypersphere">Hypersphere</option>
                     <option value="hypertetrahedron">Hypertetrahedron</option>
+                    <option value="duocylinder">Duocylinder</option>
                 </select>
              </div>
              <div>
@@ -82,8 +91,13 @@
                 <div class="control-row"><div class="slider-wrapper"><input type="range" min="0" max="1.5" step="0.01" value="0.7" class="styled-slider" id="morphFactor"></div><span class="value-display" id="morphFactor-value">0.70</span></div>
             </div>
             <div class="control-group" data-audio-band="bass">
-                <label for="dimension">Dimension (3D ↔ 4D)</label>
-                <div class="control-row"><div class="slider-wrapper"><input type="range" min="3" max="5" step="0.01" value="4.0" class="styled-slider" id="dimension"></div><span class="value-display" id="dimension-value">4.00</span></div>
+                <label for="dimension">Dimensions (N)</label>
+                <div class="control-row">
+                    <div class="slider-wrapper">
+                        <input type="number" min="2" max="8" step="1" value="4" class="styled-input" id="dimension" style="width: 60px; text-align: center;">
+                    </div>
+                    <span class="value-display" id="dimension-value">4</span>
+                </div>
             </div>
              <div class="control-group" data-audio-band="mid">
                 <label for="rotationSpeed">Rotation Speed</label>
