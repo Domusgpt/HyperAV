@@ -138,5 +138,11 @@
 
     <!-- Load the Main Script -->
     <script type="module" src="js/visualizer-main.js"></script>
+
+    <div style="position: fixed; bottom: 10px; left: 10px; background: rgba(50,50,50,0.8); padding: 10px; border-radius: 5px; z-index: 100;">
+        <label for="pmkCommandInput" style="color: white; display: block; margin-bottom: 5px;">PMK Command (JSON):</label>
+        <textarea id="pmkCommandInput" rows="3" cols="50" placeholder='{"command": "setPolytope", "payload": "duocylinder"}'></textarea>
+        <button id="sendPmkCommand" style="display: block; margin-top: 5px;">Send Command</button>
+    </div>
 </body>
 </html>

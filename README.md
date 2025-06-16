@@ -1,58 +1,47 @@
-# Multimodal N-Dimensional Polytope Visualizer
+# Headless Agentic Polytope Visualizer for PMK/ASI
 
-This project is a WebGL-based tool for visualizing dynamic geometric forms, including 4D polytopes, driven by various data sources. It started as an audio-reactive visualizer and has been expanded into a more general-purpose data visualization engine.
+This project provides a headless, API-driven WebGL module for visualizing N-dimensional polytopes and dynamic geometric forms. It is primarily designed as a **topological data display component for agentic systems**, such as the Parserator Micro-Kernel (PMK) and Adaptive Schema Intelligence (ASI).
+
+The visualizer's parameters are intended to be **machine-settable controls**, allowing an external agent to dynamically represent data states, active schemas, abstract data topologies, or system focus through the choice and configuration of displayed polytopes. Clarity and direct data mapping are prioritized over aesthetic complexity.
 
 ## Key Features
 
-*   **Multiple Data Sources:**
-    *   **Microphone Input:** Real-time audio reactivity (bass, mid, high frequencies influence visuals).
-    *   **Procedural Sine Waves:** Generates continuous data streams for visualization without external input.
-*   **Selectable Geometries:** Explore different shapes:
-    *   Hypercube
-    *   Hypersphere
-    *   Hypertetrahedron
-    *   Duocylinder (New!)
-*   **Projection Methods:** View 4D structures through:
-    *   Perspective Projection
-    *   Orthographic Projection
-    *   Stereographic Projection
-*   **Dynamic Parameter Control:** Interactive sliders adjust:
-    *   Morph Factor
-    *   Rotation Speed
-    *   Grid Density / Line Thickness / Shell Width
-    *   Pattern Intensity
-    *   Universe Modifier (distortion effects)
-    *   Color Shift & Glitch Intensity
-*   **N-Dimensional Control:**
-    *   Set the number of dimensions (N) via a UI control (integer input, e.g., 2-8).
-    *   This currently influences 4D-style effects which are then projected to 3D.
-    *   Conceptual work is in progress for a fully generalized N-dimensional rendering pipeline.
+*   **API-Driven Control:** All aspects of the visualization (geometry selection, dimensionality, visual styling, data input) are controlled programmatically.
+*   **Diverse Polytope Library:** Offers a range of polytopes (Hypercube, Hypersphere, Hypertetrahedron, Duocylinder) that can be assigned by an agent to represent different data types or system states. Extensible for new geometric forms.
+*   **Configurable N-Dimensions:** The number of dimensions for calculations can be set via API, influencing the underlying structure of the visualized forms (currently projected to 3D).
+*   **Selectable Projection Methods:** Supports various projection techniques (Perspective, Orthographic, Stereographic) to view higher-dimensional structures.
+*   **Direct Data Channel Mapping:** Designed to receive data streams (e.g., from PMK/ASI `dataChannels` or `PMKData` objects) that directly drive visual properties like morphing, rotation, color, and line characteristics, providing clear feedback on agent-observed states.
+*   **Headless Operation:** Optimized for integration as a module without a direct human-operated UI. A canvas output can be used for debugging, monitoring agent states, or generating visual outputs programmatically.
 
-## Controls Overview
+## Integration Principles
 
-The UI provides controls for:
-*   **Data Source Selection:** Switch between Microphone and Procedural data.
-*   **Geometry Selection:** Choose the polytope/shape to visualize.
-*   **Projection Method Selection:** Change how 4D structures are projected.
-*   **Parameter Sliders:** Fine-tune various visual aspects. The core data from the selected source is mapped to `u_dataChannel1`, `u_dataChannel2`, and `u_dataChannel3` uniforms in the shaders, driving many reactive elements.
+This visualizer serves as a component to be controlled by an external agent or system.
+
+*   **Agent-Led Configuration:** The controlling system (e.g., PMK Architect or ASI logic) dictates the choice of polytope, its dimensionality, its appearance, and how its features map to incoming data.
+*   **Topological Representation:** The primary goal is to clearly represent the structure and transformations of polytopes as a reflection of the agent's data understanding or focus.
+*   **API for Control:** A JavaScript API (detailed in `API_REFERENCE.md`) will be exposed by a `VisualizerController` module to enable this external control.
 
 ## Technical Aspects
 
-*   Built with **WebGL** and **GLSL** shaders for hardware-accelerated graphics.
-*   A central `HypercubeCore.js` manages the rendering loop and shader parameters.
-*   Geometries are defined in `GeometryManager.js`, allowing for new shapes to be added.
-*   Projection logic is handled by `ProjectionManager.js`.
-*   Audio processing and data source management occur in `visualizer-main.js`.
+*   Built with **WebGL** and **GLSL** shaders for efficient, hardware-accelerated graphics.
+*   `HypercubeCore.js`: The elemental rendering engine managing WebGL state and shader execution.
+*   `VisualizerController.js` (to be developed): Wraps `HypercubeCore` and exposes the control API.
+*   `GeometryManager.js`: Manages and provides shader code for different polytopes.
+*   `ShaderManager.js`: Handles shader compilation and linking.
 
-## Future Directions & Advanced Concepts
+## Future Directions
 
-The following areas have undergone initial conceptual work and represent potential future enhancements:
+*   Deepen integration with PMK/ASI by refining the API and data mapping capabilities.
+*   Expand the library of polytopes and geometric primitives for richer data representation.
+*   Enhance shader customizability through API-driven parameterization or snippet injection.
+*   Support for generating snapshots or sequences of the visualization programmatically.
 
-*   **Fully Generalized N-Dimensional Engine:** Expanding the rendering pipeline to natively support arbitrary dimensions beyond the current 3D/4D focus.
-*   **Offline / Custom Framerate Rendering:** Modifying the core engine to allow rendering image sequences independently of the browser's refresh rate, useful for video production or detailed analysis.
+## How to Use
 
-## How to Run
+This module is intended to be integrated into a larger JavaScript/TypeScript project or controlled by an external system capable of interacting with its JavaScript API.
 
-1.  Clone or download the repository.
-2.  Open `index.html` in a modern web browser that supports WebGL (e.g., Chrome, Firefox, Edge).
-3.  If using the "Microphone" data source, allow microphone access when prompted by the browser.
+1.  **Include/Import** the necessary modules (`VisualizerController`, `HypercubeCore`, etc.).
+2.  **Instantiate `VisualizerController`**, providing it with a target canvas (if rendering for display) or configuring it for offscreen rendering.
+3.  **Use the API** exposed by `VisualizerController` to set geometries, update data, and control visual parameters.
+4.  Refer to `API_REFERENCE.md` (to be created) for detailed API specifications.
+5.  An example driver script (`pmk_asi_visualizer_driver.js` - to be created) will demonstrate API usage.

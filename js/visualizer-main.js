@@ -12,6 +12,7 @@ import HypercubeCore from '../core/HypercubeCore.js';
 import ShaderManager from '../core/ShaderManager.js';
 import GeometryManager from '../core/GeometryManager.js';
 import ProjectionManager from '../core/ProjectionManager.js';
+import VisualizerController from './VisualizerController.js'; // Import VisualizerController
 
 document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('hypercube-canvas');
@@ -31,7 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const reactivityIndicator = document.querySelector('.reactivity-indicator');
     let currentDataSource = 'microphone'; // Added state variable
     
-    // Add click handler to reactivity indicator to manually trigger mic permission
     if (reactivityIndicator) {
         reactivityIndicator.addEventListener('click', async () => {
             // Only try to setup audio if not already set up
@@ -59,9 +59,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let mainVisualizerCore = null, geometryManager = null, projectionManager = null, shaderManager = null;
     
     // Enhanced audio analysis data including pitch detection
-    let analysisData = { 
-        bass: 0, mid: 0, high: 0, 
+    let analysisData = {
+        // bass, mid, high and their smooth versions can be kept for specific UI mappings
+        // or direct use if some logic still relies on these named versions for the first 3 channels.
+        // However, the primary source for HypercubeCore will be dataChannelsSmooth.
+        bass: 0, mid: 0, high: 0,
         bassSmooth: 0, midSmooth: 0, highSmooth: 0,
+        dataChannels: Array(8).fill(0.0),       // Raw values from source
+        dataChannelsSmooth: Array(8).fill(0.0), // Smoothed values for shaders
         dominantPitch: 0,        // Frequency of dominant pitch in Hz
         dominantPitchValue: 0,   // Strength of dominant pitch 0-1
         pitch: {                 // Structured pitch data
@@ -102,10 +107,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let lastPitch = 0;        // For pitch changes detection
 
     function generateProceduralData(time) {
-        const ch1 = 0.5 + 0.5 * Math.sin(time * 0.5); // Slow sine wave
-        const ch2 = 0.5 + 0.5 * Math.sin(time * 1.2); // Medium sine wave
-        const ch3 = 0.5 + 0.5 * Math.sin(time * 2.5); // Faster sine wave
-        return { ch1, ch2, ch3 };
+        const channels = [];
+        for (let i = 0; i < 8; i++) {
+            channels.push(0.5 + 0.5 * Math.sin(time * (0.5 + i * 0.3) + i * 0.5));
+        }
+        return channels;
     }
 
     async function setupAudio() {
@@ -273,15 +279,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 };
                 
                 // Set simulated frequency band data
-                analysisData.bass = 0.2 + Math.random() * 0.3;
-                analysisData.mid = 0.1 + Math.random() * 0.3;
-                analysisData.high = 0.05 + Math.random() * 0.2;
+                // analysisData.bass = 0.2 + Math.random() * 0.3; // old
+                // analysisData.mid = 0.1 + Math.random() * 0.3; // old
+                // analysisData.high = 0.05 + Math.random() * 0.2; // old
+                const simMicData = Array(8).fill(0.0);
+                simMicData[0] = 0.2 + Math.random() * 0.3;
+                simMicData[1] = 0.1 + Math.random() * 0.3;
+                simMicData[2] = 0.05 + Math.random() * 0.2;
+                // Fill other channels with some random variations if desired
+                for (let i = 3; i < 8; i++) {
+                    simMicData[i] = Math.random() * 0.1;
+                }
+                analysisData.dataChannels = simMicData;
                 
                 // Apply smoothing
                 const alpha = 0.2; // This alpha is from the original block
-                analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-                analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-                analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+                for(let i=0; i<8; i++) {
+                    analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+                }
+                analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+                analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+                analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
                 
                 // Update status occasionally
                 if (statusDiv && Math.random() < 0.01) { // Added statusDiv check
@@ -300,12 +318,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!hasAudioSignal) { // This case should ideally not be hit if the outer if(!analyser) is true, but good for robustness
                     console.warn("No audio signal detected despite analyser being present - check microphone input");
                     // Fallback to simulation similar to above, or just zero out
-                    analysisData.bass = 0; analysisData.mid = 0; analysisData.high = 0;
+                    analysisData.dataChannels.fill(0.0);
                     // Smoothing will then decay to zero
                     const alpha = 0.15;
-                    analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-                    analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-                    analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+                    for(let i=0; i<8; i++) {
+                        analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+                    }
+                    analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+                    analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+                    analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
                     return;
                 }
 
@@ -356,15 +377,21 @@ document.addEventListener('DOMContentLoaded', () => {
             analysisData.pitch = pitchData;
             
             // Update raw values
-            analysisData.bass = bassAvg;
-            analysisData.mid = midAvg;
-            analysisData.high = highAvg;
+            const currentMicData = Array(8).fill(0.0);
+            currentMicData[0] = bassAvg;
+            currentMicData[1] = midAvg;
+            currentMicData[2] = highAvg;
+            // Optionally fill other channels, e.g. currentMicData[3] = analysisData.dominantPitchValue;
+            analysisData.dataChannels = currentMicData;
             
             // Apply smoothing with proper alpha value
             const alpha = 0.15;
-            analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-            analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-            analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+            for(let i=0; i<8; i++) {
+                 analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+            }
+            analysisData.bassSmooth = analysisData.dataChannelsSmooth[0]; // Keep these for compatibility
+            analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+            analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
             
             // Log values occasionally for debugging
             if (statusDiv && Math.random() < 0.01) { // Added statusDiv check
@@ -380,29 +407,35 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (err) { // This is the original catch block for audio processing errors
                 console.error("Error analyzing audio:", err);
                 // Fallback to random values for testing
-                analysisData.bass = 0.1 + Math.random() * 0.3;
-                analysisData.mid = 0.2 + Math.random() * 0.3;
-                analysisData.high = 0.1 + Math.random() * 0.2;
+                const errorMicData = Array(8).fill(0.0);
+                errorMicData[0] = 0.1 + Math.random() * 0.3;
+                errorMicData[1] = 0.2 + Math.random() * 0.3;
+                errorMicData[2] = 0.1 + Math.random() * 0.2;
+                analysisData.dataChannels = errorMicData;
 
                 // Apply smoothing
                 const alpha = 0.2; // This alpha is from the original catch
-                analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-                analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-                analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+                for(let i=0; i<8; i++) {
+                    analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+                }
+                analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+                analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+                analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
             }
         } else if (currentDataSource === 'procedural') {
             const proceduralValues = generateProceduralData(currentTime);
-            analysisData.bass = proceduralValues.ch1;
-            analysisData.mid = proceduralValues.ch2;
-            analysisData.high = proceduralValues.ch3;
-            // Apply smoothing (optional, but good for consistency with audio path)
-            const alpha = 0.15; // Same alpha as in audio path
-            analysisData.bassSmooth = analysisData.bassSmooth * (1 - alpha) + analysisData.bass * alpha;
-            analysisData.midSmooth = analysisData.midSmooth * (1 - alpha) + analysisData.mid * alpha;
-            analysisData.highSmooth = analysisData.highSmooth * (1 - alpha) + analysisData.high * alpha;
+            analysisData.dataChannels = [...proceduralValues]; // raw values
+            const alpha = 0.15;
+            for(let i=0; i<8; i++) {
+                analysisData.dataChannelsSmooth[i] = (analysisData.dataChannelsSmooth[i] === undefined ? 0.0 : analysisData.dataChannelsSmooth[i]) * (1 - alpha) + analysisData.dataChannels[i] * alpha;
+            }
+            // Update bass/mid/high for compatibility if anything uses them by name
+            analysisData.bassSmooth = analysisData.dataChannelsSmooth[0];
+            analysisData.midSmooth = analysisData.dataChannelsSmooth[1];
+            analysisData.highSmooth = analysisData.dataChannelsSmooth[2];
 
             if (statusDiv && Math.random() < 0.01) { // Update status occasionally
-                statusDiv.textContent = `Procedural Data: CH1=${analysisData.bassSmooth.toFixed(2)} CH2=${analysisData.midSmooth.toFixed(2)} CH3=${analysisData.highSmooth.toFixed(2)}`;
+                statusDiv.textContent = `Procedural Data: CH1=${analysisData.bassSmooth.toFixed(2)} CH2=${analysisData.midSmooth.toFixed(2)} CH3=${analysisData.highSmooth.toFixed(2)}`; // Keep showing first 3 for status
             }
         }
         // Ensure that analysisData.pitch related objects are reset or handled if procedural data doesn't provide them
@@ -619,9 +652,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Calculate fully reactive parameters
         const effectiveParams = {
-            shellWidth: visualParams.shellWidth * (0.7 + analysisData.midSmooth * 1.8 + analysisData.bassSmooth * 0.4),
-            tetraThickness: visualParams.tetraThickness * (1.3 - analysisData.highSmooth * 0.9 + analysisData.bassSmooth * 0.3),
-            dataChannels: { ch1: analysisData.bassSmooth, ch2: analysisData.midSmooth, ch3: analysisData.highSmooth },
+            shellWidth: visualParams.shellWidth * (0.7 + analysisData.midSmooth * 1.8 + analysisData.bassSmooth * 0.4), // Uses smoothed named versions
+            tetraThickness: visualParams.tetraThickness * (1.3 - analysisData.highSmooth * 0.9 + analysisData.bassSmooth * 0.3), // Uses smoothed named versions
+            dataChannels: [...analysisData.dataChannelsSmooth], // Pass the full array
             
             // Add pitch-based color parameters
             hue: visualParams.hue,
@@ -912,4 +945,82 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log("Initialization complete - visualization running");
     }
     initialize();
+
+    // Instantiate VisualizerController after mainVisualizerCore is created
+    let vizController = null;
+    if (mainVisualizerCore && mainVisualizerCore.gl) {
+        vizController = new VisualizerController(mainVisualizerCore);
+    } else {
+        console.error("Failed to initialize HypercubeCore, VisualizerController cannot be created.");
+    }
+
+    // Mock PMK Input Handler
+    const commandInput = document.getElementById('pmkCommandInput');
+    const sendCommandButton = document.getElementById('sendPmkCommand');
+
+    if (sendCommandButton && commandInput && vizController) {
+        sendCommandButton.addEventListener('click', () => {
+            const commandStr = commandInput.value.trim();
+            if (!commandStr) return;
+
+            try {
+                const commandObj = JSON.parse(commandStr);
+                if (!commandObj.command || !commandObj.payload === undefined) { // Check payload existence
+                    console.error("Invalid command format. Need 'command' and 'payload'.", commandObj);
+                    if(statusDiv) statusDiv.textContent = "Error: Invalid command format.";
+                    return;
+                }
+
+                console.log("Attempting command:", commandObj.command, "with payload:", commandObj.payload);
+                if(statusDiv) statusDiv.textContent = `Cmd: ${commandObj.command}`;
+
+                switch (commandObj.command) {
+                    case 'setPolytope':
+                        if (typeof commandObj.payload === 'string') {
+                            vizController.setPolytope(commandObj.payload);
+                        } else if (typeof commandObj.payload === 'object' && commandObj.payload.name) {
+                            vizController.setPolytope(commandObj.payload.name, commandObj.payload.styleParams);
+                        } else {
+                             console.error("Invalid payload for setPolytope. Expected string or {name, styleParams}.");
+                             if(statusDiv) statusDiv.textContent = "Error: Invalid setPolytope payload.";
+                        }
+                        break;
+                    case 'setVisualStyle':
+                        if (typeof commandObj.payload === 'object') {
+                            vizController.setVisualStyle(commandObj.payload);
+                        } else {
+                            console.error("Invalid payload for setVisualStyle. Expected object.");
+                            if(statusDiv) statusDiv.textContent = "Error: Invalid setVisualStyle payload.";
+                        }
+                        break;
+                    case 'updateData':
+                        if (Array.isArray(commandObj.payload)) {
+                            vizController.updateData(commandObj.payload);
+                        } else {
+                             console.error("Invalid payload for updateData. Expected array of 8 numbers.");
+                             if(statusDiv) statusDiv.textContent = "Error: Invalid updateData payload.";
+                        }
+                        break;
+                    case 'setSpecificUniform':
+                        if (commandObj.payload && commandObj.payload.name && commandObj.payload.hasOwnProperty('value')) {
+                            vizController.setSpecificUniform(commandObj.payload.name, commandObj.payload.value);
+                        } else {
+                            console.error("Invalid payload for setSpecificUniform. Expected {name, value}.");
+                            if(statusDiv) statusDiv.textContent = "Error: Invalid setSpecificUniform payload.";
+                        }
+                        break;
+                    default:
+                        console.warn("Unknown command:", commandObj.command);
+                        if(statusDiv) statusDiv.textContent = `Error: Unknown command ${commandObj.command}`;
+                }
+                commandInput.value = ''; // Clear input after processing
+            } catch (e) {
+                console.error("Error processing command:", e);
+                if(statusDiv) statusDiv.textContent = `Error: ${e.message}`;
+            }
+        });
+    } else {
+        if (!vizController) console.warn("VisualizerController not initialized, PMK command input disabled.");
+        else console.warn("PMK command input elements not found in HTML.");
+    }
 });
