@@ -13,16 +13,155 @@ class ShaderManager {
     getAttributeLocation(name) { if (!this.currentProgramName || !this.programs[this.currentProgramName]) { return null; } const cache = this.attributeLocations[this.currentProgramName]; if (cache.hasOwnProperty(name)) { return cache[name]; } const loc = this.gl.getAttribLocation(this.programs[this.currentProgramName], name); cache[name] = (loc === -1) ? null : loc; return cache[name]; }
     _getBaseVertexShaderSource() { return `attribute vec2 a_position; varying vec2 v_uv; void main() { v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }`; }
     _getBaseFragmentShaderSource() {
-        return `
+        return \`
+#version 300 es
             precision highp float;
             uniform vec2 u_resolution; uniform float u_time;
             uniform float u_dimension; uniform float u_morphFactor; uniform float u_rotationSpeed;
             uniform float u_universeModifier; uniform float u_patternIntensity; uniform float u_gridDensity;
             uniform float u_lineThickness; uniform float u_shellWidth; uniform float u_tetraThickness; // Specific thickness uniforms
-            uniform float u_dataChannels[8]; // Changed to array of 8 floats
             uniform float u_glitchIntensity; uniform float u_colorShift;
             uniform vec3 u_primaryColor; uniform vec3 u_secondaryColor; uniform vec3 u_backgroundColor;
+            uniform vec2 u_mouse; // Global mouse
+            uniform int u_isFullScreenEffect; // Flag to switch rendering path
+
+            // Projection Uniforms (Perspective)
+            uniform float u_proj_perspective_baseDistance;
+            uniform float u_proj_perspective_morphFactorImpact;
+            uniform float u_proj_perspective_channelImpact; // Assumes pmk_channels[1] for u_audioMid
+            uniform float u_proj_perspective_denomMin;
+
+            // Projection Uniforms (Stereographic)
+            uniform float u_proj_stereo_basePoleW;
+            uniform float u_proj_stereo_channelImpact; // Assumes pmk_channels[2] for u_audioHigh
+            uniform float u_proj_stereo_epsilon;
+            uniform float u_proj_stereo_singularityScale;
+            uniform float u_proj_stereo_morphFactorImpact;
+
+            // Geometry Specific Uniforms (HypercubeGeometry)
+            uniform float u_geom_hypercube_gridDensity_channel0Factor;
+            uniform float u_geom_hypercube_gridDensity_timeFactor;
+            uniform float u_geom_hypercube_lineThickness_channel1Factor;
+            uniform vec3  u_geom_hypercube_wCoord_pCoeffs1;
+            uniform float u_geom_hypercube_wCoord_timeFactor1;
+            uniform float u_geom_hypercube_wCoord_pLengthFactor;
+            uniform float u_geom_hypercube_wCoord_timeFactor2;
+            uniform float u_geom_hypercube_wCoord_channel1Factor;
+            uniform vec3  u_geom_hypercube_wCoord_coeffs2;
+            uniform float u_geom_hypercube_baseSpeedFactor;
+            uniform float u_geom_hypercube_rotXW_timeFactor;
+            uniform float u_geom_hypercube_rotXW_channel2Factor;
+            uniform float u_geom_hypercube_rotXW_morphFactor;
+            uniform float u_geom_hypercube_rotYZ_timeFactor;
+            uniform float u_geom_hypercube_rotYZ_channel1Factor;
+            uniform float u_geom_hypercube_rotYZ_morphFactor;
+            uniform float u_geom_hypercube_rotYZ_angleScale;
+            uniform float u_geom_hypercube_rotZW_timeFactor;
+            uniform float u_geom_hypercube_rotZW_channel0Factor;
+            uniform float u_geom_hypercube_rotZW_morphFactor;
+            uniform float u_geom_hypercube_rotZW_angleScale;
+            uniform float u_geom_hypercube_rotYW_timeFactor;
+            uniform float u_geom_hypercube_rotYW_morphFactor;
+            uniform float u_geom_hypercube_finalLattice_minUniverseMod;
+
+            // Uniforms for FullScreenLatticeEffect (specific ones)
+            uniform float u_gridDensity_lattice; // Specific to lattice effect (already declared)
+            uniform float u_lattice_edgeLineWidth;
+            uniform float u_lattice_vertexSize;
+            uniform float u_lattice_distortP_pZ_factor;
+            uniform vec3  u_lattice_distortP_morphCoeffs;
+            uniform float u_lattice_distortP_timeFactorScale;
+            uniform float u_lattice_wCoord_pLengthFactor;
+            uniform float u_lattice_wCoord_timeFactor;
+            uniform float u_lattice_wCoord_dimOffset;
+            uniform float u_lattice_rotXW_timeFactor;
+            uniform float u_lattice_rotYW_timeFactor;
+            uniform float u_lattice_rotZW_timeFactor;
+            uniform float u_lattice_glitch_baseFactor;
+            uniform float u_lattice_glitch_sinFactor;
+            uniform vec2  u_lattice_glitch_rOffsetCoeffs;
+            uniform vec2  u_lattice_glitch_gOffsetCoeffs;
+            uniform vec2  u_lattice_glitch_bOffsetCoeffs;
+            uniform float u_lattice_moire_densityFactor1;
+            uniform float u_lattice_moire_densityFactor2;
+            uniform float u_lattice_moire_blendFactor;
+            uniform vec3  u_lattice_moire_mixCoeffs;
+            uniform vec3  u_lattice_baseColor;
+            uniform vec3  u_lattice_effectColor;
+            uniform vec3  u_lattice_glow_color;
+            uniform float u_lattice_glow_timeFactor;
+            uniform float u_lattice_glow_amplitudeOffset;
+            uniform float u_lattice_glow_amplitudeFactor;
+            uniform float u_lattice_vignette_inner;
+            uniform float u_lattice_vignette_outer;
+
+            // Geometry Specific Uniforms (HypersphereGeometry)
+            uniform float u_geom_hsphere_density_gridFactor;
+            uniform float u_geom_hsphere_density_channel0Factor;
+            uniform float u_geom_hsphere_shellWidth_channel1Factor;
+            uniform float u_geom_hsphere_phase_tauFactor;
+            uniform float u_geom_hsphere_phase_rotSpeedFactor;
+            uniform float u_geom_hsphere_phase_channel2Factor;
+            uniform float u_geom_hsphere_wCoord_radiusFactor;
+            uniform float u_geom_hsphere_wCoord_timeFactorCos;
+            uniform vec3  u_geom_hsphere_wCoord_pCoeffs;
+            uniform float u_geom_hsphere_wCoord_timeFactorSin;
+            uniform float u_geom_hsphere_wCoord_dimFactorOffset;
+            uniform float u_geom_hsphere_wCoord_morphFactor;
+            uniform float u_geom_hsphere_wCoord_channel1Factor;
+            uniform float u_geom_hsphere_baseSpeedFactor;
+            uniform float u_geom_hsphere_rotXW_timeFactor;
+            uniform float u_geom_hsphere_rotXW_channel2Factor;
+            uniform float u_geom_hsphere_rotXW_angleScale;
+            uniform float u_geom_hsphere_finalLattice_minUniverseMod;
+
+            // Geometry Specific Uniforms (HypertetrahedronGeometry)
+            uniform float u_geom_htetra_density_gridFactor;
+            uniform float u_geom_htetra_density_channel0Factor;
+            uniform float u_geom_htetra_thickness_channel1Factor;
+            uniform float u_geom_htetra_pMod3D_timeFactor;
+            uniform vec3  u_geom_htetra_wCoord_pCoeffsCos;
+            uniform float u_geom_htetra_wCoord_timeFactorCos;
+            uniform float u_geom_htetra_wCoord_pLengthFactor;
+            uniform float u_geom_htetra_wCoord_timeFactorSin;
+            uniform float u_geom_htetra_wCoord_channel1Factor;
+            uniform float u_geom_htetra_wCoord_dimFactorOffset;
+            uniform float u_geom_htetra_wCoord_morphFactor;
+            uniform float u_geom_htetra_wCoord_channel2Factor;
+            uniform float u_geom_htetra_baseSpeedFactor;
+            uniform float u_geom_htetra_rotXW_timeFactor;
+            uniform float u_geom_htetra_rotXW_channel2Factor;
+            uniform float u_geom_htetra_rotXW_angleScale;
+            uniform float u_geom_htetra_pMod4D_timeFactor;
+            uniform float u_geom_htetra_finalLattice_minUniverseMod;
+
+            // Geometry Specific Uniforms (DuocylinderGeometry)
+            uniform float u_geom_duocyl_r1_base;
+            uniform float u_geom_duocyl_r1_morphFactor;
+            uniform float u_geom_duocyl_r2_base;
+            uniform float u_geom_duocyl_r2_channel0Factor;
+            uniform float u_geom_duocyl_shellWidth_channel1Factor;
+            uniform float u_geom_duocyl_fallback_pLengthFactor;
+            uniform float u_geom_duocyl_fallback_channel2Factor;
+            uniform float u_geom_duocyl_wCoord_len_pXY_Factor;
+            uniform float u_geom_duocyl_wCoord_timeFactorCos;
+            uniform float u_geom_duocyl_wCoord_pzFactor;
+            uniform float u_geom_duocyl_wCoord_pxFactor;
+            uniform float u_geom_duocyl_wCoord_timeFactorSin;
+            uniform float u_geom_duocyl_wCoord_dimFactorOffset;
+            uniform float u_geom_duocyl_wCoord_morphFactor;
+            uniform float u_geom_duocyl_wCoord_channel2Factor;
+            uniform float u_geom_duocyl_baseSpeedFactor;
+            uniform float u_geom_duocyl_rotXW_timeFactor;
+            uniform float u_geom_duocyl_rotXW_channel0Factor;
+            uniform float u_geom_duocyl_rotXW_angleScale;
+            uniform float u_geom_duocyl_finalLattice_minUniverseMod;
+
             varying vec2 v_uv;
+
+            layout(std140) uniform GlobalDataBlock {
+                float pmk_channels[64]; // Start with 64 floats
+            };
 
             // N-DIMENSIONAL GENERALIZATION POINT:
             // The following rotation matrices (rotXW, rotYW, etc.) are specific to 3D/4D.
@@ -60,29 +199,75 @@ class ShaderManager {
             // where N (source dimensions) and M (target dimensions, e.g., 3 for visualization)
             // are parameters or determined by u_dimension.
             //__PROJECTION_CODE_INJECTION_POINT__
-            //__GEOMETRY_CODE_INJECTION_POINT__
+            //__GEOMETRY_CODE_INJECTION_POINT__ // This will now contain both calculateLattice and getLatticeEffectColor
+
             void main() {
-                vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0); vec2 uv = (v_uv * 2.0 - 1.0) * aspect;
-                vec3 rayOrigin = vec3(0.0, 0.0, -2.5); vec3 rayDirection = normalize(vec3(uv, 1.0));
-                float camRotY = u_time * 0.05 * u_rotationSpeed + u_dataChannels[1] * 0.1; float camRotX = sin(u_time * 0.03 * u_rotationSpeed) * 0.15 + u_dataChannels[2] * 0.1;
-                mat4 camMat = rotXY(camRotX) * rotYZ(camRotY); rayDirection = (camMat * vec4(rayDirection, 0.0)).xyz;
-                vec3 p = rayDirection * 1.5; float latticeValue = calculateLattice(p);
-                vec3 color = mix(u_backgroundColor, u_primaryColor, latticeValue);
-                color = mix(color, u_secondaryColor, smoothstep(0.2, 0.7, u_dataChannels[1]) * latticeValue * 0.6);
-                if (abs(u_colorShift) > 0.01) { vec3 hsv = rgb2hsv(color); hsv.x = fract(hsv.x + u_colorShift * 0.5 + u_dataChannels[2] * 0.1); color = hsv2rgb(hsv); }
-                color *= (0.8 + u_patternIntensity * 0.7);
-                if (u_glitchIntensity > 0.001) {
-                     float glitch = u_glitchIntensity * (0.5 + 0.5 * sin(u_time * 8.0 + p.y * 10.0));
-                     vec2 offsetR = vec2(cos(u_time*25.), sin(u_time*18.+p.x*5.)) * glitch * 0.2 * aspect; vec2 offsetB = vec2(sin(u_time*19.+p.y*6.), cos(u_time*28.)) * glitch * 0.15 * aspect;
-                     vec3 pR = normalize(vec3(uv + offsetR/aspect, 1.0)); pR = (camMat*vec4(pR,0.0)).xyz * 1.5; vec3 pB = normalize(vec3(uv + offsetB/aspect, 1.0)); pB = (camMat*vec4(pB,0.0)).xyz * 1.5;
-                     float latticeR = calculateLattice(pR); float latticeB = calculateLattice(pB);
-                     vec3 colorR = mix(u_backgroundColor, u_primaryColor, latticeR); colorR = mix(colorR, u_secondaryColor, smoothstep(0.2, 0.7, u_dataChannels[1]) * latticeR * 0.6);
-                     vec3 colorB = mix(u_backgroundColor, u_primaryColor, latticeB); colorB = mix(colorB, u_secondaryColor, smoothstep(0.2, 0.7, u_dataChannels[1]) * latticeB * 0.6);
-                     if (abs(u_colorShift) > 0.01) { vec3 hsvR=rgb2hsv(colorR); hsvR.x=fract(hsvR.x+u_colorShift*0.5+u_dataChannels[2]*0.1); colorR=hsv2rgb(hsvR); vec3 hsvB=rgb2hsv(colorB); hsvB.x=fract(hsvB.x+u_colorShift*0.5+u_dataChannels[2]*0.1); colorB=hsv2rgb(hsvB); }
-                     color = vec3(colorR.r, color.g, colorB.b); color *= (0.8 + u_patternIntensity * 0.7);
+                vec3 finalColor;
+
+                if (u_isFullScreenEffect == 1) {
+                    // FullScreenLatticeEffect path
+                    // Note: u_mouse_lattice, u_morphFactor_lattice etc. were defined in FullScreenLatticeGeometry.
+                    // Here, we assume HypercubeCore will map global uniforms (u_mouse, u_morphFactor etc.)
+                    // to these if they are intended to be the same, or manage specific ones.
+                    // For this subtask, we use the global uniform names directly where they match,
+                    // and specific names (like u_gridDensity_lattice) where specified.
+                    // u_mouse is assumed to be a global vec2 uniform for mouse position.
+                    finalColor = getLatticeEffectColor(v_uv, u_time, u_resolution, u_mouse,
+                                                       u_morphFactor, u_glitchIntensity, u_rotationSpeed,
+                                                       u_dimension, u_gridDensity_lattice);
+                } else {
+                    // Standard SDF rendering path
+                    vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0); vec2 uv = (v_uv * 2.0 - 1.0) * aspect;
+                    vec3 rayOrigin = vec3(0.0, 0.0, -2.5); vec3 rayDirection = normalize(vec3(uv, 1.0));
+
+                    // Use pmk_channels for rotation influence as per previous changes
+                    float camRotY = u_time * 0.05 * u_rotationSpeed + pmk_channels[1] * 0.1;
+                    float camRotX = sin(u_time * 0.03 * u_rotationSpeed) * 0.15 + pmk_channels[2] * 0.1;
+                    mat4 camMat = rotXY(camRotX) * rotYZ(camRotY);
+                    rayDirection = (camMat * vec4(rayDirection, 0.0)).xyz;
+
+                    vec3 p = rayDirection * 1.5;
+                    float latticeValue = calculateLattice(p); // From standard SDF geometries
+
+                    finalColor = mix(u_backgroundColor, u_primaryColor, latticeValue);
+                    finalColor = mix(finalColor, u_secondaryColor, smoothstep(0.2, 0.7, pmk_channels[1]) * latticeValue * 0.6);
+
+                    if (abs(u_colorShift) > 0.01) {
+                        vec3 hsv = rgb2hsv(finalColor);
+                        hsv.x = fract(hsv.x + u_colorShift * 0.5 + pmk_channels[2] * 0.1);
+                        finalColor = hsv2rgb(hsv);
+                    }
+
+                    finalColor *= (0.8 + u_patternIntensity * 0.7);
+
+                    if (u_glitchIntensity > 0.001) {
+                         float glitch = u_glitchIntensity * (0.5 + 0.5 * sin(u_time * 8.0 + p.y * 10.0));
+                         vec2 offsetR = vec2(cos(u_time*25.), sin(u_time*18.+p.x*5.)) * glitch * 0.2 * aspect;
+                         vec2 offsetB = vec2(sin(u_time*19.+p.y*6.), cos(u_time*28.)) * glitch * 0.15 * aspect;
+
+                         vec3 pR_glitch = normalize(vec3(uv + offsetR/aspect, 1.0));
+                         pR_glitch = (camMat*vec4(pR_glitch,0.0)).xyz * 1.5;
+                         vec3 pB_glitch = normalize(vec3(uv + offsetB/aspect, 1.0));
+                         pB_glitch = (camMat*vec4(pB_glitch,0.0)).xyz * 1.5;
+
+                         float latticeR = calculateLattice(pR_glitch);
+                         float latticeB = calculateLattice(pB_glitch);
+
+                         vec3 colorR = mix(u_backgroundColor, u_primaryColor, latticeR);
+                         colorR = mix(colorR, u_secondaryColor, smoothstep(0.2, 0.7, pmk_channels[1]) * latticeR * 0.6);
+                         vec3 colorB = mix(u_backgroundColor, u_primaryColor, latticeB);
+                         colorB = mix(colorB, u_secondaryColor, smoothstep(0.2, 0.7, pmk_channels[1]) * latticeB * 0.6);
+
+                         if (abs(u_colorShift) > 0.01) {
+                             vec3 hsvR=rgb2hsv(colorR); hsvR.x=fract(hsvR.x+u_colorShift*0.5+pmk_channels[2]*0.1); colorR=hsv2rgb(hsvR);
+                             vec3 hsvB=rgb2hsv(colorB); hsvB.x=fract(hsvB.x+u_colorShift*0.5+pmk_channels[2]*0.1); colorB=hsv2rgb(hsvB);
+                         }
+                         finalColor = vec3(colorR.r, finalColor.g, colorB.b);
+                         finalColor *= (0.8 + u_patternIntensity * 0.7);
+                    }
+                    finalColor = pow(clamp(finalColor, 0.0, 1.5), vec3(0.9));
                 }
-                color = pow(clamp(color, 0.0, 1.5), vec3(0.9));
-                gl_FragColor = vec4(color, 1.0);
+                gl_FragColor = vec4(finalColor, 1.0);
             }
         `;
     }
