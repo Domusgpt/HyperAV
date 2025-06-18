@@ -1,0 +1,40 @@
+{
+  "name": "visualization-kernel",
+  "version": "2.0.0",
+  "description": "WebGPU-based N-dimensional visualization kernel for agentic systems",
+  "main": "controllers/VisualizerController.js",
+  "type": "module",
+  "scripts": {
+    "start": "http-server -c-1 -p 8080",
+    "test": "jest",
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "lint": "eslint .",
+    "docs": "jsdoc -c jsdoc.json"
+  },
+  "dependencies": {
+    "gl-matrix": "^3.4.3"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.22.0",
+    "@babel/preset-env": "^7.22.0",
+    "@rollup/plugin-babel": "^6.0.3",
+    "@rollup/plugin-node-resolve": "^15.0.2",
+    "eslint": "^8.42.0",
+    "http-server": "^14.1.1",
+    "jest": "^29.5.0",
+    "jsdoc": "^4.0.2",
+    "rollup": "^3.25.0"
+  },
+  "keywords": [
+    "webgpu",
+    "visualization",
+    "n-dimensional",
+    "polytope",
+    "pmk",
+    "parserator",
+    "agent-systems"
+  ],
+  "author": "GEN-RL-MiLLz",
+  "license": "MIT"
+}

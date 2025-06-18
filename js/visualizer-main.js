@@ -9,10 +9,10 @@
  * - Optimized audio analysis parameters for better visual performance
  */
 import HypercubeCore from '../core/HypercubeCore.js';
-import ShaderManager from '../core/ShaderManager.js';
-import GeometryManager from '../core/GeometryManager.js';
-import ProjectionManager from '../core/ProjectionManager.js';
-import VisualizerController from './VisualizerController.js'; // Import VisualizerController
+import ShaderManager from '../core/ShaderManager.js'; // May not be needed directly here anymore
+import GeometryManager from '../core/GeometryManager.js'; // May not be needed directly here anymore
+import ProjectionManager from '../core/ProjectionManager.js'; // May not be needed directly here anymore
+import VisualizerController from '../controllers/VisualizerController.js'; // Import VisualizerController
 
 document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('hypercube-canvas');
@@ -31,6 +31,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const geometrySelect = document.getElementById('geometryType'); const projectionSelect = document.getElementById('projectionMethod');
     const reactivityIndicator = document.querySelector('.reactivity-indicator');
     let currentDataSource = 'microphone'; // Added state variable
+
+    // --- New UI Elements for Data Mapping Testbed ---
+    const dataSnapshotInput = document.getElementById('dataSnapshotInput');
+    const updateDataButton = document.getElementById('updateDataButton');
+    const mappingRulesInput = document.getElementById('mappingRulesInput');
+    const setMappingRulesButton = document.getElementById('setMappingRulesButton');
+
+    const demoSnapshotField = document.getElementById('demoSnapshotField');
+    const demoUboChannel = document.getElementById('demoUboChannel');
+    const demoDefaultValue = document.getElementById('demoDefaultValue');
+    const demoTransformType = document.getElementById('demoTransformType');
+    const quickTransformDemoParams = document.getElementById('quickTransformDemoParams');
+    const applyDemoTransformButton = document.getElementById('applyDemoTransformButton');
+    // --- End New UI Elements ---
     
     if (reactivityIndicator) {
         reactivityIndicator.addEventListener('click', async () => {
@@ -55,8 +69,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // State
-    let gl = null, audioContext = null, analyser = null, micSource = null;
-    let mainVisualizerCore = null, geometryManager = null, projectionManager = null, shaderManager = null;
+    let audioContext = null, analyser = null, micSource = null; // gl is removed
+    let mainVisualizerCore = null; // shaderManager, geometryManager, projectionManager removed from here
+                                   // as HypercubeCore will manage them or they are passed differently.
     
     // Enhanced audio analysis data including pitch detection
     let analysisData = {
@@ -862,55 +877,183 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function initialize() {
+        // Ensure setupControls has run to initialize visualParams with slider defaults
+        // if HypercubeCore options depend on them directly at construction.
+        // If visualParams are only applied later via vizController.setVisualStyle, this is less critical here.
+        setupControls();
+
+        const baseVertexWGSL = `
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn main(@location(0) position: vec2<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.uv = position * 0.5 + 0.5;
+    out.clip_position = vec4<f32>(position, 0.0, 1.0);
+    return out;
+}
+`;
+
+        const baseFragmentWGSL = `
+// {{INJECTED_GEOMETRY_UNIFORMS_STRUCT}}
+// {{INJECTED_PROJECTION_UNIFORMS_STRUCT}}
+
+struct VertexInput {
+    @location(0) uv: vec2<f32>,
+};
+
+struct GlobalUniforms {
+    resolution: vec2<f32>,
+    time: f32,
+    dimension: f32,
+    morphFactor: f32,
+    rotationSpeed: f32,
+    universeModifier: f32,
+    patternIntensity: f32,
+    gridDensity: f32,
+    gridDensity_lattice: f32,
+    lineThickness: f32,
+    shellWidth: f32,
+    tetraThickness: f32,
+    glitchIntensity: f32,
+    colorShift: f32,
+    mouse: vec2<f32>,
+    isFullScreenEffect: u32,
+    primaryColor: vec3<f32>,
+    secondaryColor: vec3<f32>,
+    backgroundColor: vec3<f32>,
+};
+@group(0) @binding(0) var<uniform> globalUniforms: GlobalUniforms;
+
+struct DataChannels {
+    pmk_channels: array<f32, 64>,
+};
+@group(0) @binding(1) var<uniform> dataChannels: DataChannels;
+
+// Group 1: Geometry Uniforms (struct definition injected by HypercubeCore)
+// @group(1) @binding(0) var<uniform> geometryUniforms: GeometrySpecificUniforms;
+
+// Group 2: Projection Uniforms (struct definition injected by HypercubeCore)
+// @group(2) @binding(0) var<uniform> projectionUniforms: ProjectionSpecificUniforms;
+
+
+// Common math/rotation functions
+fn rotXW(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(c,0,0,-s,  0,1,0,0,  0,0,1,0,  s,0,0,c); }
+fn rotYW(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(1,0,0,0,  0,c,0,-s,  0,0,1,0,  0,s,0,c); }
+fn rotZW(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(1,0,0,0,  0,1,0,0,  0,0,c,-s,  0,0,s,c); }
+fn rotXY(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(c,-s,0,0,  s,c,0,0,  0,0,1,0,  0,0,0,1); }
+fn rotYZ(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(1,0,0,0,  0,c,-s,0,  0,s,c,0,  0,0,0,1); }
+fn rotXZ(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(c,0,-s,0,  0,1,0,0,  s,0,c,0,  0,0,0,1); }
+
+fn rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    var p: vec4<f32>;
+    if (c.g < c.b) { p = vec4<f32>(c.bg, K.w, K.z); }
+    else { p = vec4<f32>(c.gb, K.x, K.y); }
+    var q: vec4<f32>;
+    if (c.r < p.x) { q = vec4<f32>(p.xyw, c.r); }
+    else { q = vec4<f32>(c.r, p.yzx); }
+    let d = q.x - min(q.w, q.y);
+    let e = 1.0e-10;
+    return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+}
+
+// {{INJECTED_PROJECTION_MODULE}}
+// {{INJECTED_GEOMETRY_MODULE}}
+
+@fragment
+fn main(fsInput: VertexInput) -> @location(0) vec4<f32> {
+    var finalColor: vec3<f32>;
+
+    // The specific geometry module (e.g. FullScreenLattice's calculateFullScreenLatticeFragment)
+    // or the SDF path below will be determined by HypercubeCore's shader composition.
+    // This 'main' function in base_fragment.wgsl is primarily for the SDF path.
+    // Fullscreen effects might replace this main function entirely or be called from here.
+    // HypercubeCore._getWGSLShaderSources determines the final fragmentEntryPoint.
+
+    if (globalUniforms.isFullScreenEffect == 1u) {
+        // This path expects a function like 'calculateFullScreenLatticeFragment' to be the entry point
+        // or for the injected geometry module to effectively become the main function.
+        // The placeholder call here will be replaced by HypercubeCore if it's a fullscreen effect
+        // that doesn't provide its own @fragment main.
+        // For now, direct call to what FullScreenLatticeGeometry provides:
+        finalColor = calculateFullScreenLatticeFragment(fsInput.uv, globalUniforms, dataChannels);
+    } else {
+        // Standard SDF rendering path
+        let aspect = globalUniforms.resolution.x / globalUniforms.resolution.y;
+        let uv = (fsInput.uv * 2.0 - 1.0) * vec2<f32>(aspect, 1.0);
+        var rayOrigin = vec3<f32>(0.0, 0.0, -2.5);
+        var rayDirection = normalize(vec3<f32>(uv, 1.0));
+        let camRotY = globalUniforms.time * 0.05 * globalUniforms.rotationSpeed + dataChannels.pmk_channels[1] * 0.1;
+        let camRotX = sin(globalUniforms.time * 0.03 * globalUniforms.rotationSpeed) * 0.15 + dataChannels.pmk_channels[2] * 0.1;
+        let camMat = rotXY(camRotX) * rotYZ(camRotY);
+        rayDirection = (camMat * vec4<f32>(rayDirection, 0.0)).xyz;
+        let p_world = rayDirection * 1.5; // World space point for SDF
+
+        // These calls will be dynamically replaced by HypercubeCore._getWGSLShaderSources
+        // to call the actual SDF and projection functions.
+        // e.g. projectPerspective(vec4<f32>(p_world, w_coord), globalUniforms, dataChannels, projectionUniforms)
+        //      calculateHypercubeSDF(projected_point, globalUniforms, dataChannels, geometryUniforms)
+        // For now, this base shader uses generic placeholder names that must be defined by the injected modules.
+        // The actual projection (p4d -> projectedP) and SDF (projectedP -> sdfValue) logic
+        // is within the functions provided by geometry/projection managers.
+        // The base_fragment.wgsl provides the "shell" (raymarching, lighting, etc.)
+        // This example is highly simplified, actual raymarching loop is omitted.
+        let sdfValue = calculateLattice_placeholder(p_world, globalUniforms, dataChannels /*, geometryUniforms */); // geomUniforms might be optional if not defined
+
+        finalColor = mix(globalUniforms.backgroundColor, globalUniforms.primaryColor, sdfValue);
+        finalColor = mix(finalColor, globalUniforms.secondaryColor, smoothstep(0.2, 0.7, dataChannels.pmk_channels[1]) * sdfValue * 0.6);
+
+        if (abs(globalUniforms.colorShift) > 0.01) {
+            var hsv = rgb2hsv(finalColor);
+            hsv.x = fract(hsv.x + globalUniforms.colorShift * 0.5 + dataChannels.pmk_channels[2] * 0.1);
+            finalColor = hsv2rgb(hsv);
+        }
+        finalColor = finalColor * (0.8 + globalUniforms.patternIntensity * 0.7);
+
+        if (globalUniforms.glitchIntensity > 0.001) {
+            // Simplified glitch, full version would re-evaluate SDF with offset rays
+            let glitch = globalUniforms.glitchIntensity * (0.5 + 0.5 * sin(globalUniforms.time * 8.0 + p_world.y * 10.0));
+            finalColor.r = finalColor.r + glitch * 0.2;
+            finalColor.b = finalColor.b - glitch * 0.15;
+        }
+        finalColor = pow(clamp(finalColor, vec3<f32>(0.0), vec3<f32>(1.5)), vec3<f32>(0.9));
+    }
+    return vec4<f32>(finalColor, 1.0);
+}
+`;
         try {
-            // Set status
-            statusDiv.textContent = "Initializing WebGL...";
+            statusDiv.textContent = "Initializing WebGPU...";
             
-            // Initialize WebGL context with antialiasing
-            gl = canvas.getContext('webgl', { 
-                antialias: true,
-                powerPreference: 'high-performance',
-                desynchronized: true
-            }) || canvas.getContext('experimental-webgl'); 
+            const options = {
+                geometryType: geometrySelect?.value ?? 'hypercube',
+                projectionMethod: projectionSelect?.value ?? 'perspective',
+                ...visualParams, // Spread initial slider values or defaults
+                callbacks: {
+                    onError: (err) => {
+                        statusDiv.textContent = `Vis Error: ${err.message}`;
+                        console.error("Visualizer error:", err);
+                    },
+                    onRender: () => { /* Optional render callback */ }
+                }
+            };
             
-            if (!gl) throw new Error("WebGL context creation failed");
+            // Pass null for shaderManager instance, HypercubeCore will create its own.
+            // Pass the WGSL shader strings.
+            mainVisualizerCore = new HypercubeCore(canvas, null, baseVertexWGSL, baseFragmentWGSL, options);
             
-            // Initialize core managers
-            statusDiv.textContent = "Creating geometry...";
-            geometryManager = new GeometryManager();
-            projectionManager = new ProjectionManager();
+            await mainVisualizerCore._asyncInitialization; // Wait for WebGPU device and context
             
-            // Initialize shader manager
-            statusDiv.textContent = "Compiling shaders...";
-            shaderManager = new ShaderManager(gl, geometryManager, projectionManager);
-            
-            // Setup UI controls
-            setupControls();
-            
-            // Create main visualizer core with error callback
-            statusDiv.textContent = "Creating visualization core...";
-            mainVisualizerCore = new HypercubeCore(canvas, shaderManager, {
-                 geometryType: 'hypercube', // MODIFIED for testing SDF geometries
-                 projectionMethod: projectionSelect?.value ?? 'perspective',
-                 ...visualParams,
-                 callbacks: { 
-                     onError: (err) => { 
-                         statusDiv.textContent = `Vis Error: ${err.message}`; 
-                         console.error("Visualizer error:", err); 
-                     },
-                     onRender: () => {
-                         // Optional render callback for frame timing
-                     }
-                 }
-            });
-            
-            // Check if shaders compiled successfully
-            if (!mainVisualizerCore.shaderManager.programs[mainVisualizerCore.state.shaderProgramName]) {
-                throw new Error("Initial shader compilation failed");
-            }
-            
-            // Log success
-            console.log("Visualizer Core initialized successfully");
+            console.log("HypercubeCore WebGPU initialized successfully.");
             statusDiv.textContent = "Visualization ready";
         } catch (err) { 
             console.error("Visualization initialization error:", err); 
@@ -957,7 +1100,130 @@ document.addEventListener('DOMContentLoaded', () => {
         
         console.log("Initialization complete - visualization running");
     }
-    initialize();
+    initialize().then(() => {
+        // This block runs after initialize() completes (successfully or with error handling within it)
+        if (mainVisualizerCore && mainVisualizerCore.device) {
+            const initialDataChannelDef = {
+                uboChannels: [
+                    { snapshotField: 'audio_bass', uboChannelIndex: 0, defaultValue: 0.0 },
+                    { snapshotField: 'audio_mid', uboChannelIndex: 1, defaultValue: 0.0 },
+                    { snapshotField: 'audio_high', uboChannelIndex: 2, defaultValue: 0.0 },
+                    { snapshotField: 'time_seconds', uboChannelIndex: 3, defaultValue: 0.0 },
+                    { snapshotField: 'pitch_frequency', uboChannelIndex: 4, defaultValue: 0.0 },
+                    { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 },
+                    { snapshotField: 'energy_factor', uboChannelIndex: 6, defaultValue: 0.0 },
+                    { snapshotField: 'dissonance_factor', uboChannelIndex: 7, defaultValue: 0.0 }
+                ],
+                directParams: [
+                    { snapshotField: 'ui_rotationSpeed', coreStateName: 'rotationSpeed', defaultValue: visualParams.rotationSpeed },
+                    { snapshotField: 'ui_morphFactor', coreStateName: 'morphFactor', defaultValue: visualParams.morphFactor },
+                    { snapshotField: 'ui_glitchIntensity', coreStateName: 'glitchIntensity', defaultValue: visualParams.glitchIntensity }
+                ]
+            };
+            const baseParams = {
+                colorShift: 0.05, patternIntensity: 1.2,
+                proj_perspective_baseDistance: 2.8,
+                geom_hypercube_baseSpeedFactor: 1.1,
+                lattice_edgeLineWidth: 0.025
+            };
+
+            vizController = new VisualizerController(mainVisualizerCore, {
+                dataChannelDefinition: initialDataChannelDef,
+                baseParameters: baseParams
+            });
+
+            // --- Initialize Data Mapping Testbed UI (Moved here to ensure vizController is ready) ---
+            if (dataSnapshotInput) {
+                dataSnapshotInput.value = JSON.stringify({
+                    "temperature": 75,
+                    "status_code": "WARN",
+                    "light_color": "#FF8800",
+                    "raw_level": 120,
+                    "audio_bass": 0.6,
+                    "audio_mid": 0.3,
+                    "audio_high": 0.1,
+                    "time_seconds": 0,
+                    "pitch_frequency": 220,
+                    "pitch_strength": 0.9,
+                    "energy_factor": 0.4,
+                    "dissonance_factor": 0.2
+                }, null, 2);
+            }
+            if (mappingRulesInput) {
+                mappingRulesInput.value = JSON.stringify({
+                    "ubo": [
+                        {
+                            "snapshotField": "temperature", "uboChannelIndex": 0, "defaultValue": 60,
+                            "transform": { "name": "linearScale", "domain": [50, 100], "range": [0, 1] }
+                        },
+                        {
+                            "snapshotField": "raw_level", "uboChannelIndex": 1, "defaultValue": 0,
+                            "transform": { "name": "clamp", "min": 0, "max": 100 }
+                        },
+                        {
+                            "snapshotField": "audio_mid", "uboChannelIndex": 2, "defaultValue": 0.01,
+                            "transform": { "name": "logScale", "domain": [0.01, 1], "range": [0, 1] }
+                        }
+                    ],
+                    "direct": {
+                        "status_code": {
+                            "coreStateName": "statusIndicatorColor", "defaultValue": [0.5, 0.5, 0.5],
+                            "transform": {
+                                "name": "stringToEnum",
+                                "map": { "OK": [0,1,0,1], "WARN": [1,1,0,1], "ERROR": [1,0,0,1] },
+                                "defaultOutput": [0.5,0.5,0.5,1]
+                            }
+                        },
+                        "light_color": {
+                            "coreStateName": "lightColorVec", "defaultValue": [1,1,1,1],
+                            "transform": {"name": "colorStringToVec", "defaultOutput": [0,0,0,1]}
+                        }
+                    }
+                }, null, 2);
+            }
+
+            updateDataButton?.addEventListener('click', () => {
+                if (!vizController) return;
+                try {
+                    const snapshot = JSON.parse(dataSnapshotInput.value);
+                    vizController.updateData(snapshot);
+                    console.log("Data snapshot updated via UI button:", snapshot);
+                    if(statusDiv) statusDiv.textContent = "Snapshot updated.";
+                } catch (e) {
+                    console.error("Error parsing Data Snapshot JSON:", e);
+                    if(statusDiv) statusDiv.textContent = "Error: Invalid Data Snapshot JSON.";
+                    alert("Error in Data Snapshot JSON: " + e.message);
+                }
+            });
+
+            setMappingRulesButton?.addEventListener('click', () => {
+                if (!vizController) return;
+                try {
+                    const rules = JSON.parse(mappingRulesInput.value);
+                    vizController.setDataMappingRules(rules);
+                    console.log("Mapping rules set via UI button:", rules);
+                    if(statusDiv) statusDiv.textContent = "Mapping rules set.";
+                } catch (e) {
+                    console.error("Error parsing Mapping Rules JSON:", e);
+                    if(statusDiv) statusDiv.textContent = "Error: Invalid Mapping Rules JSON.";
+                    alert("Error in Mapping Rules JSON: " + e.message);
+                }
+            });
+
+            setupQuickTransformDemo(); // Setup demo UI interactions
+
+        } else {
+            console.error("Failed to initialize HypercubeCore or its device, VisualizerController cannot be created.");
+            if(statusDiv) statusDiv.textContent = "Error: Core initialization failed. Controller not created.";
+        }
+
+        // Start audio setup if not auto-started by initialize()
+        // This might be redundant if initialize() always attempts it.
+        if (!audioContext && reactivityIndicator) {
+             reactivityIndicator.textContent = "CLICK FOR MIC ACCESS";
+        }
+    });
+
 
     // Instantiate VisualizerController after mainVisualizerCore is created
     let vizController = null;
@@ -969,35 +1235,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 { snapshotField: 'audio_high', uboChannelIndex: 2, defaultValue: 0.0 },
                 { snapshotField: 'time_seconds', uboChannelIndex: 3, defaultValue: 0.0 },
                 { snapshotField: 'pitch_frequency', uboChannelIndex: 4, defaultValue: 0.0 },
-                { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 }, // Existing channel 5
-                // For testing, we will add a new specific mapping for channel 5 if the above is already used.
-                // Let's assume 'pitch_strength' is okay, or if we need a dedicated test, we'd ensure this index is unique for 'test_ubo_channel_5'.
-                // For clarity, let's add a new specific one, assuming channel 5 might be used by pitch_strength.
-                // Let's use channel 8 (0-indexed) for test_ubo_channel_5, if available.
-                // Rechecking initialDataChannelDef, channels 0-7 are used. So let's use channel 8 for test.
-                { snapshotField: 'test_ubo_channel_5_effect', uboChannelIndex: 8, defaultValue: 0.0 }, // Changed to 8 for clarity
+                { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 },
                 { snapshotField: 'energy_factor', uboChannelIndex: 6, defaultValue: 0.0 },
                 { snapshotField: 'dissonance_factor', uboChannelIndex: 7, defaultValue: 0.0 }
+                // Removed test_ubo_channel_5_effect for cleaner initial config
             ],
             directParams: [
-                // visualParams are reactive based on audio, so mapping them directly from a snapshot
-                // might conflict with the reactive system unless the snapshot is the source of truth for them.
-                // For now, let's assume UI/sliders update visualParams, which then can be part of snapshot.
                 { snapshotField: 'ui_rotationSpeed', coreStateName: 'rotationSpeed', defaultValue: visualParams.rotationSpeed },
                 { snapshotField: 'ui_morphFactor', coreStateName: 'morphFactor', defaultValue: visualParams.morphFactor },
                 { snapshotField: 'ui_glitchIntensity', coreStateName: 'glitchIntensity', defaultValue: visualParams.glitchIntensity }
             ]
         };
-        // Example baseParameters (could be loaded from a config file or UI preset)
         const baseParams = {
-            // core state
-            colorShift: 0.05,
-            patternIntensity: 1.2,
-            // projection params
+            colorShift: 0.05, patternIntensity: 1.2,
             proj_perspective_baseDistance: 2.8,
-            // geometry params for hypercube (if it's the default)
             geom_hypercube_baseSpeedFactor: 1.1,
-            // lattice params (if fullscreenlattice is used)
             lattice_edgeLineWidth: 0.025
         };
 
@@ -1006,13 +1258,94 @@ document.addEventListener('DOMContentLoaded', () => {
             baseParameters: baseParams
         });
 
+        // --- Initialize Data Mapping Testbed UI ---
+        if (dataSnapshotInput) {
+            dataSnapshotInput.value = JSON.stringify({
+                "temperature": 75,
+                "status_code": "WARN",
+                "light_color": "#FF8800",
+                "raw_level": 120,
+                "audio_bass": 0.6, // Example audio data
+                "audio_mid": 0.3,
+                "audio_high": 0.1,
+                "time_seconds": 0,
+                "pitch_frequency": 220,
+                "pitch_strength": 0.9,
+                "energy_factor": 0.4,
+                "dissonance_factor": 0.2
+            }, null, 2);
+        }
+        if (mappingRulesInput) {
+            mappingRulesInput.value = JSON.stringify({
+                "ubo": [
+                    {
+                        "snapshotField": "temperature", "uboChannelIndex": 0, "defaultValue": 60,
+                        "transform": { "name": "linearScale", "domain": [50, 100], "range": [0, 1] }
+                    },
+                    {
+                        "snapshotField": "raw_level", "uboChannelIndex": 1, "defaultValue": 0,
+                        "transform": { "name": "clamp", "min": 0, "max": 100 }
+                    },
+                    // Example: Map audio_mid to UBO channel 2 with a log scale
+                    {
+                        "snapshotField": "audio_mid", "uboChannelIndex": 2, "defaultValue": 0.01,
+                        "transform": { "name": "logScale", "domain": [0.01, 1], "range": [0, 1] }
+                    }
+                ],
+                "direct": {
+                    "status_code": {
+                        "coreStateName": "statusIndicatorColor", "defaultValue": [0.5, 0.5, 0.5],
+                        "transform": {
+                            "name": "stringToEnum",
+                            "map": { "OK": [0,1,0,1], "WARN": [1,1,0,1], "ERROR": [1,0,0,1] },
+                            "defaultOutput": [0.5,0.5,0.5,1]
+                        }
+                    },
+                    "light_color": {
+                        "coreStateName": "lightColorVec", "defaultValue": [1,1,1,1],
+                        "transform": {"name": "colorStringToVec", "defaultOutput": [0,0,0,1]}
+                    }
+                }
+            }, null, 2);
+        }
+
+        updateDataButton?.addEventListener('click', () => {
+            if (!vizController) return;
+            try {
+                const snapshot = JSON.parse(dataSnapshotInput.value);
+                vizController.updateData(snapshot);
+                console.log("Data snapshot updated via UI button:", snapshot);
+                if(statusDiv) statusDiv.textContent = "Snapshot updated.";
+            } catch (e) {
+                console.error("Error parsing Data Snapshot JSON:", e);
+                if(statusDiv) statusDiv.textContent = "Error: Invalid Data Snapshot JSON.";
+                alert("Error in Data Snapshot JSON: " + e.message);
+            }
+        });
+
+        setMappingRulesButton?.addEventListener('click', () => {
+            if (!vizController) return;
+            try {
+                const rules = JSON.parse(mappingRulesInput.value);
+                vizController.setDataMappingRules(rules);
+                console.log("Mapping rules set via UI button:", rules);
+                if(statusDiv) statusDiv.textContent = "Mapping rules set.";
+            } catch (e) {
+                console.error("Error parsing Mapping Rules JSON:", e);
+                if(statusDiv) statusDiv.textContent = "Error: Invalid Mapping Rules JSON.";
+                alert("Error in Mapping Rules JSON: " + e.message);
+            }
+        });
+
+        setupQuickTransformDemo();
+
     } else {
         console.error("Failed to initialize HypercubeCore, VisualizerController cannot be created.");
     }
 
-    // Update mainUpdateLoop to use vizController.updateData with a snapshot
+    // This is the active mainUpdateLoop, the one defined around line 469 should be inactive or removed.
     function mainUpdateLoop() {
-        if (!mainVisualizerCore?.state?.isRendering || !vizController) return; // Added !vizController check
+        if (!mainVisualizerCore?.state?.isRendering || !vizController) return;
         updateDataChannels();
 
         // ... (all the reactive calculations for effectiveParams remain the same) ...
@@ -1129,11 +1462,11 @@ document.addEventListener('DOMContentLoaded', () => {
             ui_glitchIntensity: visualParams.glitchIntensity
             // Add any other values from 'effectiveParams' that are defined in directParams or uboChannels
             // For example, if 'glitchIntensity' is a directParam, it would be:
-            // visual_glitchIntensity: effectiveParams.glitchIntensity
-            // (assuming snapshotField is 'visual_glitchIntensity')
-            test_ubo_channel_5_effect: (Math.sin(mainVisualizerCore.state.time * 2.0) + 1.0) * 0.25 // Pulsating value for UBO channel 8
+            // visual_glitchIntensity: effectiveParams.glitchIntensity (assuming snapshotField is 'visual_glitchIntensity')
+            // Example for a field potentially used by quick demo transform
+            // "temperature": (Math.sin(mainVisualizerCore.state.time * 0.1) * 25) + 75 // Simulate temperature
         };
-        // Also, add any other effectiveParams that are meant to be directly controlled but are calculated reactively
+        // Also, add any other effectiveParams that are meant to be directly controlled but are calculated reactively.
         // This part needs careful consideration of what 'effectiveParams' should override vs. what snapshot provides.
         // For now, we assume snapshot provides raw data, and HypercubeCore state (from sliders/UI) is separate.
         // The directParams in initialDataChannelDef like 'ui_rotationSpeed' are from 'visualParams' (sliders).
@@ -1194,7 +1527,7 @@ document.addEventListener('DOMContentLoaded', () => {
                              if(statusDiv) statusDiv.textContent = "Error: Invalid updateData payload (must be JSON object).";
                         }
                         break;
-                    case 'setDataMappingRules': // New command
+                    case 'setDataMappingRules':
                         if (typeof commandObj.payload === 'object' && commandObj.payload !== null) {
                             vizController.setDataMappingRules(commandObj.payload);
                         } else {
@@ -1202,7 +1535,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             if(statusDiv) statusDiv.textContent = "Error: Invalid setDataMappingRules payload.";
                         }
                         break;
-                    case 'setSpecificUniform':
+                    case 'setSpecificUniform': // This command might become less relevant if all uniforms are via dataChannels or core state
                         if (commandObj.payload && commandObj.payload.name && commandObj.payload.hasOwnProperty('value')) {
                             vizController.setSpecificUniform(commandObj.payload.name, commandObj.payload.value);
                         } else {
@@ -1222,6 +1555,169 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     } else {
         if (!vizController) console.warn("VisualizerController not initialized, PMK command input disabled.");
-        else console.warn("PMK command input elements not found in HTML.");
+        // else console.warn("PMK command input elements not found in HTML."); // This can be noisy if not using PMK
+    }
+
+    function setupQuickTransformDemo() {
+        if (!demoTransformType || !quickTransformDemoParams || !applyDemoTransformButton || !vizController) {
+            console.warn("Quick Transform Demo UI elements not found or vizController missing.");
+            return;
+        }
+
+        const createInputElement = (id, type, label, value, props = {}) => {
+            const div = document.createElement('div');
+            const lbl = document.createElement('label');
+            lbl.htmlFor = id;
+            lbl.textContent = label + ":";
+            const input = document.createElement('input');
+            input.type = type;
+            input.id = id;
+            input.value = value;
+            for (const prop in props) input[prop] = props[prop];
+            div.appendChild(lbl);
+            div.appendChild(input);
+            return div;
+        };
+
+        const createTextareaElement = (id, label, value, props = {}) => {
+            const div = document.createElement('div');
+            const lbl = document.createElement('label');
+            lbl.htmlFor = id;
+            lbl.textContent = label + ":";
+            const textarea = document.createElement('textarea');
+            textarea.id = id;
+            textarea.value = value;
+            for (const prop in props) textarea[prop] = props[prop];
+            textarea.style.fontFamily = 'monospace';
+            textarea.style.fontSize = '0.9em';
+            textarea.rows = props.rows || 2;
+            div.appendChild(lbl);
+            div.appendChild(textarea);
+            return div;
+        };
+
+
+        function updateDemoUI() {
+            quickTransformDemoParams.innerHTML = ''; // Clear previous params
+            const type = demoTransformType.value;
+
+            if (type === 'linearScale' || type === 'logScale') {
+                quickTransformDemoParams.appendChild(createInputElement('demoDomainMin', 'number', 'Domain Min', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoDomainMax', 'number', 'Domain Max', '100'));
+                quickTransformDemoParams.appendChild(createInputElement('demoRangeMin', 'number', 'Range Min', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoRangeMax', 'number', 'Range Max', '1'));
+                if (type === 'logScale') {
+                    const help = document.createElement('p');
+                    help.textContent = 'Log scale requires domain/range > 0.';
+                    help.style.fontSize = '0.8em'; help.style.color = 'var(--color-secondary)';
+                    quickTransformDemoParams.appendChild(help);
+                }
+            } else if (type === 'clamp') {
+                quickTransformDemoParams.appendChild(createInputElement('demoClampMin', 'number', 'Min Value', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoClampMax', 'number', 'Max Value', '1'));
+            } else if (type === 'threshold') {
+                quickTransformDemoParams.appendChild(createInputElement('demoThresholdVal', 'number', 'Threshold', '0.5'));
+                quickTransformDemoParams.appendChild(createInputElement('demoBelowVal', 'number', 'Value if Below', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoAboveVal', 'number', 'Value if Above', '1'));
+            } else if (type === 'stringToEnum') {
+                 quickTransformDemoParams.appendChild(createTextareaElement('demoEnumMap', 'Enum Map (JSON: {"str":num})', '{\n  "OK": 0,\n  "WARN": 1,\n  "ERROR": 2\n}', {rows: 3}));
+                 quickTransformDemoParams.appendChild(createInputElement('demoEnumDefault', 'number', 'Default Output', '0'));
+                 const help = document.createElement('p');
+                 help.textContent = 'UBO mapping: output is number. For direct mapping, output can be array/object if map values are.';
+                 help.style.fontSize = '0.8em'; help.style.color = 'var(--color-secondary)';
+                 quickTransformDemoParams.appendChild(help);
+            } else if (type === 'colorStringToVec') {
+                quickTransformDemoParams.appendChild(createInputElement('demoColorDefaultOutput', 'text', 'Default Output (e.g., [1,0,0,1] or #FF0000)', '[0,0,0,1]'));
+                 const help = document.createElement('p');
+                 help.textContent = 'Usually for direct params. For UBO, would output to multiple channels (not auto-handled by this demo).';
+                 help.style.fontSize = '0.8em'; help.style.color = 'var(--color-secondary)';
+                 quickTransformDemoParams.appendChild(help);
+            }
+        }
+
+        demoTransformType.addEventListener('change', updateDemoUI);
+        updateDemoUI(); // Initial call
+
+        applyDemoTransformButton.addEventListener('click', () => {
+            const snapshotField = demoSnapshotField.value.trim();
+            const uboChannelIndex = parseInt(demoUboChannel.value);
+            const defaultValue = parseFloat(demoDefaultValue.value); // Assuming numeric for UBO
+            const transformType = demoTransformType.value;
+
+            if (!snapshotField) { alert("Snapshot Field cannot be empty."); return; }
+            if (isNaN(uboChannelIndex) || uboChannelIndex < 0 || uboChannelIndex > 63) { alert("Invalid UBO Channel Index."); return; }
+            if (isNaN(defaultValue)) { alert("Invalid Default Value."); return; }
+
+            const rule = {
+                snapshotField: snapshotField,
+                uboChannelIndex: uboChannelIndex,
+                defaultValue: defaultValue,
+            };
+
+            if (transformType !== 'none') {
+                const transform = { name: transformType };
+                try {
+                    if (transformType === 'linearScale' || transformType === 'logScale') {
+                        transform.domain = [parseFloat(document.getElementById('demoDomainMin').value), parseFloat(document.getElementById('demoDomainMax').value)];
+                        transform.range = [parseFloat(document.getElementById('demoRangeMin').value), parseFloat(document.getElementById('demoRangeMax').value)];
+                        if (transform.domain.some(isNaN) || transform.range.some(isNaN)) throw new Error("Invalid domain/range values.");
+                        if (transformType === 'logScale' && (transform.domain.some(v => v <= 0) || transform.range.some(v => v <= 0))) {
+                            alert("Log scale domain and range values must be > 0."); return;
+                        }
+                    } else if (transformType === 'clamp') {
+                        transform.min = parseFloat(document.getElementById('demoClampMin').value);
+                        transform.max = parseFloat(document.getElementById('demoClampMax').value);
+                        if (isNaN(transform.min) || isNaN(transform.max)) throw new Error("Invalid min/max for clamp.");
+                    } else if (transformType === 'threshold') {
+                        transform.thresholdValue = parseFloat(document.getElementById('demoThresholdVal').value);
+                        transform.belowValue = parseFloat(document.getElementById('demoBelowVal').value); // Assuming numeric for UBO
+                        transform.aboveValue = parseFloat(document.getElementById('demoAboveVal').value); // Assuming numeric for UBO
+                        if (isNaN(transform.thresholdValue) || isNaN(transform.belowValue) || isNaN(transform.aboveValue)) throw new Error("Invalid threshold/below/above values.");
+                    } else if (transformType === 'stringToEnum') {
+                        transform.map = JSON.parse(document.getElementById('demoEnumMap').value);
+                        transform.defaultOutput = parseFloat(document.getElementById('demoEnumDefault').value); // Assuming numeric output for UBO
+                         if (isNaN(transform.defaultOutput)) throw new Error("Invalid default output for stringToEnum.");
+                    } else if (transformType === 'colorStringToVec') {
+                        // This demo primarily targets UBO. For colorStringToVec to UBO, it's tricky as it outputs an array.
+                        // A user would typically map this to multiple UBO channels manually or use a direct param.
+                        // For simplicity, this demo will show the config but it might not make sense for a single UBO channel.
+                        alert("colorStringToVec is best for 'direct' params. For UBO, you'd map its [r,g,b,a] output to 3 or 4 channels. This demo applies the rule, but check console for actual UBO values.");
+                        transform.defaultOutput = JSON.parse(document.getElementById('demoColorDefaultOutput').value);
+                    }
+                    rule.transform = transform;
+                } catch (e) {
+                    alert("Error parsing transform parameters: " + e.message);
+                    return;
+                }
+            }
+
+            const rulesToSet = { ubo: [rule], direct: {} }; // For simplicity, demo only sets one UBO rule.
+
+            // If we want to demonstrate direct mapping for colorStringToVec:
+            if (transformType === 'colorStringToVec') {
+                 rulesToSet.ubo = []; // Clear UBO rule
+                 rulesToSet.direct = {
+                     [snapshotField]: {
+                         coreStateName: "demoColorParam", // Example direct param name
+                         defaultValue: [0,0,0,1],
+                         transform: rule.transform
+                     }
+                 };
+                 // Also need to update the defaultValue for the direct rule to match the transform's expected output type
+                 try {
+                    rulesToSet.direct[snapshotField].defaultValue = JSON.parse(document.getElementById('demoColorDefaultOutput').value);
+                 } catch(e) { /* ignore if not valid JSON, keep default array */ }
+
+                 alert(`Applying as direct param rule for field '${snapshotField}' to coreStateName 'demoColorParam'. You'll need HypercubeCore to actually use 'demoColorParam'.`);
+            }
+
+
+            vizController.setDataMappingRules(rulesToSet);
+            if(statusDiv) statusDiv.textContent = `Demo rule applied for ${snapshotField}.`;
+            console.log("Applied demo transform rule:", rulesToSet);
+
+            // Update the main mapping rules textarea to show what was set
+            mappingRulesInput.value = JSON.stringify(rulesToSet, null, 2);
+        });
     }
 });
