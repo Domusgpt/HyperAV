@@ -12,7 +12,7 @@ import HypercubeCore from '../core/HypercubeCore.js';
 import ShaderManager from '../core/ShaderManager.js';
 import GeometryManager from '../core/GeometryManager.js';
 import ProjectionManager from '../core/ProjectionManager.js';
-import VisualizerController from './VisualizerController.js'; // Import VisualizerController
+import VisualizerController from '../controllers/VisualizerController.js'; // Import VisualizerController
 
 document.addEventListener('DOMContentLoaded', () => {
     const canvas = document.getElementById('hypercube-canvas');

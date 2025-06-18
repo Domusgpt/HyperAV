@@ -255,7 +255,7 @@ class GeometryManager {
 // Import FullScreenLatticeGeometry AFTER BaseGeometry is defined and before GeometryManager might use it.
 // However, since _initGeometries calls registerGeometry which uses BaseGeometry,
 // it's better to import at the top.
-import FullScreenLatticeGeometry from './FullScreenLatticeGeometry.js';
+import FullScreenLatticeGeometry from '../geometries/FullScreenLatticeGeometry.js';
 
 export { GeometryManager, BaseGeometry, HypercubeGeometry, HypersphereGeometry, HypertetrahedronGeometry, DuocylinderGeometry, FullScreenLatticeGeometry };
 export default GeometryManager;
