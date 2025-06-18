@@ -350,6 +350,97 @@ class HypercubeCore {
         this._populateInitialUniformData(); // Populate and write initial data
     }
 
+    /**
+     * Renders a single frame to the provided GPUTextureView.
+     * @param {number} timestamp - The current time for the frame, can be used to set this.state.time if needed.
+     * @param {GPUTextureView} targetTextureView - The texture view to render to.
+     * @param {GPUTextureFormat} targetTextureFormat - The format of the target texture.
+     * @param {{width: number, height: number}} targetTextureSize - The dimensions of the target texture.
+     * @returns {boolean} True if rendering was attempted, false otherwise.
+     * @private
+     */
+    _renderToTexture(timestamp, targetTextureView, targetTextureFormat, targetTextureSize) {
+        if (!this.device || !this.context) {
+            console.error("WebGPU device or context not available for rendering to texture.");
+            return false;
+        }
+         if (!targetTextureView || !targetTextureFormat || !targetTextureSize) {
+            console.error("_renderToTexture: Missing targetTextureView, targetTextureFormat, or targetTextureSize.");
+            return false;
+        }
+
+        // Ensure uniforms are up-to-date on the GPU
+        // It's assumed that this.state.time and other parameters for the snapshot
+        // have been set via updateParameters() before calling getSnapshot(),
+        // which in turn calls this method.
+        // So, we just need to ensure buffers are written.
+        this._updateDirtyUniformBuffers();
+
+
+        try {
+            const commandEncoder = this.device.createCommandEncoder();
+
+            const colorAttachment = {
+                view: targetTextureView,
+                clearValue: {
+                    r: this.state.colorScheme.background[0],
+                    g: this.state.colorScheme.background[1],
+                    b: this.state.colorScheme.background[2],
+                    a: 1.0
+                },
+                loadOp: 'clear',
+                storeOp: 'store',
+            };
+
+            const passEncoder = commandEncoder.beginRenderPass({
+                colorAttachments: [colorAttachment],
+            });
+
+            // Set viewport for the offscreen texture
+            passEncoder.setViewport(0, 0, targetTextureSize.width, targetTextureSize.height, 0, 1);
+            passEncoder.setScissorRect(0, 0, targetTextureSize.width, targetTextureSize.height);
+
+
+            // TODO: Set actual pipeline from ShaderManager
+            // const pipeline = this.shaderManager.getRenderPipeline(
+            //     this.state.shaderProgramName,
+            //     this.state.geometryType,
+            //     this.state.projectionMethod
+            // );
+            // if (pipeline) {
+            //    passEncoder.setPipeline(pipeline);
+            // } else {
+            //    console.error("Render pipeline not available for _renderToTexture!");
+            //    passEncoder.end();
+            //    commandEncoder.finish(); // Finish cleanly even if no pipeline
+            //    return false;
+            // }
+
+            // TODO: Create and set bind groups for uniform buffers
+            // passEncoder.setBindGroup(0, this.globalUniformsBindGroup); // Example
+            // passEncoder.setBindGroup(1, this.dataChannelsBindGroup); // Example
+            // passEncoder.setBindGroup(2, this.geometryUniformsBindGroup); // Example
+            // passEncoder.setBindGroup(3, this.projectionUniformsBindGroup); // Example
+
+
+            if (this.quadBuffer) {
+                passEncoder.setVertexBuffer(0, this.quadBuffer);
+                // passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
+                // If using triangle strip with 4 vertices: passEncoder.draw(4, 1, 0, 0);
+                // For now, commented out as pipeline is not set.
+            }
+
+            passEncoder.end();
+            this.device.queue.submit([commandEncoder.finish()]);
+            return true;
+
+        } catch (error) {
+            console.error("Error during WebGPU rendering to texture:", error);
+            return false;
+        }
+    }
+
+
     _initGPUQuadBuffer() {
         // Using a simple quad (2 triangles, 6 vertices) for a full-screen effect
         const quadVertexData = new Float32Array([

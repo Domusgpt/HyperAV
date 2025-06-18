@@ -31,6 +31,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const geometrySelect = document.getElementById('geometryType'); const projectionSelect = document.getElementById('projectionMethod');
     const reactivityIndicator = document.querySelector('.reactivity-indicator');
     let currentDataSource = 'microphone'; // Added state variable
+
+    // --- New UI Elements for Data Mapping Testbed ---
+    const dataSnapshotInput = document.getElementById('dataSnapshotInput');
+    const updateDataButton = document.getElementById('updateDataButton');
+    const mappingRulesInput = document.getElementById('mappingRulesInput');
+    const setMappingRulesButton = document.getElementById('setMappingRulesButton');
+
+    const demoSnapshotField = document.getElementById('demoSnapshotField');
+    const demoUboChannel = document.getElementById('demoUboChannel');
+    const demoDefaultValue = document.getElementById('demoDefaultValue');
+    const demoTransformType = document.getElementById('demoTransformType');
+    const quickTransformDemoParams = document.getElementById('quickTransformDemoParams');
+    const applyDemoTransformButton = document.getElementById('applyDemoTransformButton');
+    // --- End New UI Elements ---
     
     if (reactivityIndicator) {
         reactivityIndicator.addEventListener('click', async () => {
@@ -969,35 +983,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 { snapshotField: 'audio_high', uboChannelIndex: 2, defaultValue: 0.0 },
                 { snapshotField: 'time_seconds', uboChannelIndex: 3, defaultValue: 0.0 },
                 { snapshotField: 'pitch_frequency', uboChannelIndex: 4, defaultValue: 0.0 },
-                { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 }, // Existing channel 5
-                // For testing, we will add a new specific mapping for channel 5 if the above is already used.
-                // Let's assume 'pitch_strength' is okay, or if we need a dedicated test, we'd ensure this index is unique for 'test_ubo_channel_5'.
-                // For clarity, let's add a new specific one, assuming channel 5 might be used by pitch_strength.
-                // Let's use channel 8 (0-indexed) for test_ubo_channel_5, if available.
-                // Rechecking initialDataChannelDef, channels 0-7 are used. So let's use channel 8 for test.
-                { snapshotField: 'test_ubo_channel_5_effect', uboChannelIndex: 8, defaultValue: 0.0 }, // Changed to 8 for clarity
+                { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 },
                 { snapshotField: 'energy_factor', uboChannelIndex: 6, defaultValue: 0.0 },
                 { snapshotField: 'dissonance_factor', uboChannelIndex: 7, defaultValue: 0.0 }
+                // Removed test_ubo_channel_5_effect for cleaner initial config
             ],
             directParams: [
-                // visualParams are reactive based on audio, so mapping them directly from a snapshot
-                // might conflict with the reactive system unless the snapshot is the source of truth for them.
-                // For now, let's assume UI/sliders update visualParams, which then can be part of snapshot.
                 { snapshotField: 'ui_rotationSpeed', coreStateName: 'rotationSpeed', defaultValue: visualParams.rotationSpeed },
                 { snapshotField: 'ui_morphFactor', coreStateName: 'morphFactor', defaultValue: visualParams.morphFactor },
                 { snapshotField: 'ui_glitchIntensity', coreStateName: 'glitchIntensity', defaultValue: visualParams.glitchIntensity }
             ]
         };
-        // Example baseParameters (could be loaded from a config file or UI preset)
         const baseParams = {
-            // core state
-            colorShift: 0.05,
-            patternIntensity: 1.2,
-            // projection params
+            colorShift: 0.05, patternIntensity: 1.2,
             proj_perspective_baseDistance: 2.8,
-            // geometry params for hypercube (if it's the default)
             geom_hypercube_baseSpeedFactor: 1.1,
-            // lattice params (if fullscreenlattice is used)
             lattice_edgeLineWidth: 0.025
         };
 
@@ -1006,13 +1006,94 @@ document.addEventListener('DOMContentLoaded', () => {
             baseParameters: baseParams
         });
 
+        // --- Initialize Data Mapping Testbed UI ---
+        if (dataSnapshotInput) {
+            dataSnapshotInput.value = JSON.stringify({
+                "temperature": 75,
+                "status_code": "WARN",
+                "light_color": "#FF8800",
+                "raw_level": 120,
+                "audio_bass": 0.6, // Example audio data
+                "audio_mid": 0.3,
+                "audio_high": 0.1,
+                "time_seconds": 0,
+                "pitch_frequency": 220,
+                "pitch_strength": 0.9,
+                "energy_factor": 0.4,
+                "dissonance_factor": 0.2
+            }, null, 2);
+        }
+        if (mappingRulesInput) {
+            mappingRulesInput.value = JSON.stringify({
+                "ubo": [
+                    {
+                        "snapshotField": "temperature", "uboChannelIndex": 0, "defaultValue": 60,
+                        "transform": { "name": "linearScale", "domain": [50, 100], "range": [0, 1] }
+                    },
+                    {
+                        "snapshotField": "raw_level", "uboChannelIndex": 1, "defaultValue": 0,
+                        "transform": { "name": "clamp", "min": 0, "max": 100 }
+                    },
+                    // Example: Map audio_mid to UBO channel 2 with a log scale
+                    {
+                        "snapshotField": "audio_mid", "uboChannelIndex": 2, "defaultValue": 0.01,
+                        "transform": { "name": "logScale", "domain": [0.01, 1], "range": [0, 1] }
+                    }
+                ],
+                "direct": {
+                    "status_code": {
+                        "coreStateName": "statusIndicatorColor", "defaultValue": [0.5, 0.5, 0.5],
+                        "transform": {
+                            "name": "stringToEnum",
+                            "map": { "OK": [0,1,0,1], "WARN": [1,1,0,1], "ERROR": [1,0,0,1] },
+                            "defaultOutput": [0.5,0.5,0.5,1]
+                        }
+                    },
+                    "light_color": {
+                        "coreStateName": "lightColorVec", "defaultValue": [1,1,1,1],
+                        "transform": {"name": "colorStringToVec", "defaultOutput": [0,0,0,1]}
+                    }
+                }
+            }, null, 2);
+        }
+
+        updateDataButton?.addEventListener('click', () => {
+            if (!vizController) return;
+            try {
+                const snapshot = JSON.parse(dataSnapshotInput.value);
+                vizController.updateData(snapshot);
+                console.log("Data snapshot updated via UI button:", snapshot);
+                if(statusDiv) statusDiv.textContent = "Snapshot updated.";
+            } catch (e) {
+                console.error("Error parsing Data Snapshot JSON:", e);
+                if(statusDiv) statusDiv.textContent = "Error: Invalid Data Snapshot JSON.";
+                alert("Error in Data Snapshot JSON: " + e.message);
+            }
+        });
+
+        setMappingRulesButton?.addEventListener('click', () => {
+            if (!vizController) return;
+            try {
+                const rules = JSON.parse(mappingRulesInput.value);
+                vizController.setDataMappingRules(rules);
+                console.log("Mapping rules set via UI button:", rules);
+                if(statusDiv) statusDiv.textContent = "Mapping rules set.";
+            } catch (e) {
+                console.error("Error parsing Mapping Rules JSON:", e);
+                if(statusDiv) statusDiv.textContent = "Error: Invalid Mapping Rules JSON.";
+                alert("Error in Mapping Rules JSON: " + e.message);
+            }
+        });
+
+        setupQuickTransformDemo();
+
     } else {
         console.error("Failed to initialize HypercubeCore, VisualizerController cannot be created.");
     }
 
-    // Update mainUpdateLoop to use vizController.updateData with a snapshot
+    // This is the active mainUpdateLoop, the one defined around line 469 should be inactive or removed.
     function mainUpdateLoop() {
-        if (!mainVisualizerCore?.state?.isRendering || !vizController) return; // Added !vizController check
+        if (!mainVisualizerCore?.state?.isRendering || !vizController) return;
         updateDataChannels();
 
         // ... (all the reactive calculations for effectiveParams remain the same) ...
@@ -1129,11 +1210,11 @@ document.addEventListener('DOMContentLoaded', () => {
             ui_glitchIntensity: visualParams.glitchIntensity
             // Add any other values from 'effectiveParams' that are defined in directParams or uboChannels
             // For example, if 'glitchIntensity' is a directParam, it would be:
-            // visual_glitchIntensity: effectiveParams.glitchIntensity
-            // (assuming snapshotField is 'visual_glitchIntensity')
-            test_ubo_channel_5_effect: (Math.sin(mainVisualizerCore.state.time * 2.0) + 1.0) * 0.25 // Pulsating value for UBO channel 8
+            // visual_glitchIntensity: effectiveParams.glitchIntensity (assuming snapshotField is 'visual_glitchIntensity')
+            // Example for a field potentially used by quick demo transform
+            // "temperature": (Math.sin(mainVisualizerCore.state.time * 0.1) * 25) + 75 // Simulate temperature
         };
-        // Also, add any other effectiveParams that are meant to be directly controlled but are calculated reactively
+        // Also, add any other effectiveParams that are meant to be directly controlled but are calculated reactively.
         // This part needs careful consideration of what 'effectiveParams' should override vs. what snapshot provides.
         // For now, we assume snapshot provides raw data, and HypercubeCore state (from sliders/UI) is separate.
         // The directParams in initialDataChannelDef like 'ui_rotationSpeed' are from 'visualParams' (sliders).
@@ -1194,7 +1275,7 @@ document.addEventListener('DOMContentLoaded', () => {
                              if(statusDiv) statusDiv.textContent = "Error: Invalid updateData payload (must be JSON object).";
                         }
                         break;
-                    case 'setDataMappingRules': // New command
+                    case 'setDataMappingRules':
                         if (typeof commandObj.payload === 'object' && commandObj.payload !== null) {
                             vizController.setDataMappingRules(commandObj.payload);
                         } else {
@@ -1202,7 +1283,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             if(statusDiv) statusDiv.textContent = "Error: Invalid setDataMappingRules payload.";
                         }
                         break;
-                    case 'setSpecificUniform':
+                    case 'setSpecificUniform': // This command might become less relevant if all uniforms are via dataChannels or core state
                         if (commandObj.payload && commandObj.payload.name && commandObj.payload.hasOwnProperty('value')) {
                             vizController.setSpecificUniform(commandObj.payload.name, commandObj.payload.value);
                         } else {
@@ -1222,6 +1303,169 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     } else {
         if (!vizController) console.warn("VisualizerController not initialized, PMK command input disabled.");
-        else console.warn("PMK command input elements not found in HTML.");
+        // else console.warn("PMK command input elements not found in HTML."); // This can be noisy if not using PMK
+    }
+
+    function setupQuickTransformDemo() {
+        if (!demoTransformType || !quickTransformDemoParams || !applyDemoTransformButton || !vizController) {
+            console.warn("Quick Transform Demo UI elements not found or vizController missing.");
+            return;
+        }
+
+        const createInputElement = (id, type, label, value, props = {}) => {
+            const div = document.createElement('div');
+            const lbl = document.createElement('label');
+            lbl.htmlFor = id;
+            lbl.textContent = label + ":";
+            const input = document.createElement('input');
+            input.type = type;
+            input.id = id;
+            input.value = value;
+            for (const prop in props) input[prop] = props[prop];
+            div.appendChild(lbl);
+            div.appendChild(input);
+            return div;
+        };
+
+        const createTextareaElement = (id, label, value, props = {}) => {
+            const div = document.createElement('div');
+            const lbl = document.createElement('label');
+            lbl.htmlFor = id;
+            lbl.textContent = label + ":";
+            const textarea = document.createElement('textarea');
+            textarea.id = id;
+            textarea.value = value;
+            for (const prop in props) textarea[prop] = props[prop];
+            textarea.style.fontFamily = 'monospace';
+            textarea.style.fontSize = '0.9em';
+            textarea.rows = props.rows || 2;
+            div.appendChild(lbl);
+            div.appendChild(textarea);
+            return div;
+        };
+
+
+        function updateDemoUI() {
+            quickTransformDemoParams.innerHTML = ''; // Clear previous params
+            const type = demoTransformType.value;
+
+            if (type === 'linearScale' || type === 'logScale') {
+                quickTransformDemoParams.appendChild(createInputElement('demoDomainMin', 'number', 'Domain Min', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoDomainMax', 'number', 'Domain Max', '100'));
+                quickTransformDemoParams.appendChild(createInputElement('demoRangeMin', 'number', 'Range Min', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoRangeMax', 'number', 'Range Max', '1'));
+                if (type === 'logScale') {
+                    const help = document.createElement('p');
+                    help.textContent = 'Log scale requires domain/range > 0.';
+                    help.style.fontSize = '0.8em'; help.style.color = 'var(--color-secondary)';
+                    quickTransformDemoParams.appendChild(help);
+                }
+            } else if (type === 'clamp') {
+                quickTransformDemoParams.appendChild(createInputElement('demoClampMin', 'number', 'Min Value', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoClampMax', 'number', 'Max Value', '1'));
+            } else if (type === 'threshold') {
+                quickTransformDemoParams.appendChild(createInputElement('demoThresholdVal', 'number', 'Threshold', '0.5'));
+                quickTransformDemoParams.appendChild(createInputElement('demoBelowVal', 'number', 'Value if Below', '0'));
+                quickTransformDemoParams.appendChild(createInputElement('demoAboveVal', 'number', 'Value if Above', '1'));
+            } else if (type === 'stringToEnum') {
+                 quickTransformDemoParams.appendChild(createTextareaElement('demoEnumMap', 'Enum Map (JSON: {"str":num})', '{\n  "OK": 0,\n  "WARN": 1,\n  "ERROR": 2\n}', {rows: 3}));
+                 quickTransformDemoParams.appendChild(createInputElement('demoEnumDefault', 'number', 'Default Output', '0'));
+                 const help = document.createElement('p');
+                 help.textContent = 'UBO mapping: output is number. For direct mapping, output can be array/object if map values are.';
+                 help.style.fontSize = '0.8em'; help.style.color = 'var(--color-secondary)';
+                 quickTransformDemoParams.appendChild(help);
+            } else if (type === 'colorStringToVec') {
+                quickTransformDemoParams.appendChild(createInputElement('demoColorDefaultOutput', 'text', 'Default Output (e.g., [1,0,0,1] or #FF0000)', '[0,0,0,1]'));
+                 const help = document.createElement('p');
+                 help.textContent = 'Usually for direct params. For UBO, would output to multiple channels (not auto-handled by this demo).';
+                 help.style.fontSize = '0.8em'; help.style.color = 'var(--color-secondary)';
+                 quickTransformDemoParams.appendChild(help);
+            }
+        }
+
+        demoTransformType.addEventListener('change', updateDemoUI);
+        updateDemoUI(); // Initial call
+
+        applyDemoTransformButton.addEventListener('click', () => {
+            const snapshotField = demoSnapshotField.value.trim();
+            const uboChannelIndex = parseInt(demoUboChannel.value);
+            const defaultValue = parseFloat(demoDefaultValue.value); // Assuming numeric for UBO
+            const transformType = demoTransformType.value;
+
+            if (!snapshotField) { alert("Snapshot Field cannot be empty."); return; }
+            if (isNaN(uboChannelIndex) || uboChannelIndex < 0 || uboChannelIndex > 63) { alert("Invalid UBO Channel Index."); return; }
+            if (isNaN(defaultValue)) { alert("Invalid Default Value."); return; }
+
+            const rule = {
+                snapshotField: snapshotField,
+                uboChannelIndex: uboChannelIndex,
+                defaultValue: defaultValue,
+            };
+
+            if (transformType !== 'none') {
+                const transform = { name: transformType };
+                try {
+                    if (transformType === 'linearScale' || transformType === 'logScale') {
+                        transform.domain = [parseFloat(document.getElementById('demoDomainMin').value), parseFloat(document.getElementById('demoDomainMax').value)];
+                        transform.range = [parseFloat(document.getElementById('demoRangeMin').value), parseFloat(document.getElementById('demoRangeMax').value)];
+                        if (transform.domain.some(isNaN) || transform.range.some(isNaN)) throw new Error("Invalid domain/range values.");
+                        if (transformType === 'logScale' && (transform.domain.some(v => v <= 0) || transform.range.some(v => v <= 0))) {
+                            alert("Log scale domain and range values must be > 0."); return;
+                        }
+                    } else if (transformType === 'clamp') {
+                        transform.min = parseFloat(document.getElementById('demoClampMin').value);
+                        transform.max = parseFloat(document.getElementById('demoClampMax').value);
+                        if (isNaN(transform.min) || isNaN(transform.max)) throw new Error("Invalid min/max for clamp.");
+                    } else if (transformType === 'threshold') {
+                        transform.thresholdValue = parseFloat(document.getElementById('demoThresholdVal').value);
+                        transform.belowValue = parseFloat(document.getElementById('demoBelowVal').value); // Assuming numeric for UBO
+                        transform.aboveValue = parseFloat(document.getElementById('demoAboveVal').value); // Assuming numeric for UBO
+                        if (isNaN(transform.thresholdValue) || isNaN(transform.belowValue) || isNaN(transform.aboveValue)) throw new Error("Invalid threshold/below/above values.");
+                    } else if (transformType === 'stringToEnum') {
+                        transform.map = JSON.parse(document.getElementById('demoEnumMap').value);
+                        transform.defaultOutput = parseFloat(document.getElementById('demoEnumDefault').value); // Assuming numeric output for UBO
+                         if (isNaN(transform.defaultOutput)) throw new Error("Invalid default output for stringToEnum.");
+                    } else if (transformType === 'colorStringToVec') {
+                        // This demo primarily targets UBO. For colorStringToVec to UBO, it's tricky as it outputs an array.
+                        // A user would typically map this to multiple UBO channels manually or use a direct param.
+                        // For simplicity, this demo will show the config but it might not make sense for a single UBO channel.
+                        alert("colorStringToVec is best for 'direct' params. For UBO, you'd map its [r,g,b,a] output to 3 or 4 channels. This demo applies the rule, but check console for actual UBO values.");
+                        transform.defaultOutput = JSON.parse(document.getElementById('demoColorDefaultOutput').value);
+                    }
+                    rule.transform = transform;
+                } catch (e) {
+                    alert("Error parsing transform parameters: " + e.message);
+                    return;
+                }
+            }
+
+            const rulesToSet = { ubo: [rule], direct: {} }; // For simplicity, demo only sets one UBO rule.
+
+            // If we want to demonstrate direct mapping for colorStringToVec:
+            if (transformType === 'colorStringToVec') {
+                 rulesToSet.ubo = []; // Clear UBO rule
+                 rulesToSet.direct = {
+                     [snapshotField]: {
+                         coreStateName: "demoColorParam", // Example direct param name
+                         defaultValue: [0,0,0,1],
+                         transform: rule.transform
+                     }
+                 };
+                 // Also need to update the defaultValue for the direct rule to match the transform's expected output type
+                 try {
+                    rulesToSet.direct[snapshotField].defaultValue = JSON.parse(document.getElementById('demoColorDefaultOutput').value);
+                 } catch(e) { /* ignore if not valid JSON, keep default array */ }
+
+                 alert(`Applying as direct param rule for field '${snapshotField}' to coreStateName 'demoColorParam'. You'll need HypercubeCore to actually use 'demoColorParam'.`);
+            }
+
+
+            vizController.setDataMappingRules(rulesToSet);
+            if(statusDiv) statusDiv.textContent = `Demo rule applied for ${snapshotField}.`;
+            console.log("Applied demo transform rule:", rulesToSet);
+
+            // Update the main mapping rules textarea to show what was set
+            mappingRulesInput.value = JSON.stringify(rulesToSet, null, 2);
+        });
     }
 });
