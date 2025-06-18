@@ -1,4 +1,4 @@
-import BaseGeometry from './BaseGeometry.js'; // Assuming BaseGeometry exists
+import { BaseGeometry } from '../core/GeometryManager.js';
 
 class FullScreenLatticeGeometry extends BaseGeometry {
     constructor(options = {}) {
@@ -6,206 +6,172 @@ class FullScreenLatticeGeometry extends BaseGeometry {
         this.type = 'fullscreenlattice';
     }
 
-    getShaderCode() {
-        // GLSL code extracted and adapted from HypercubeLatticeEffect fragment shader
+    getUniformBufferWGSLStruct() {
         return `
-            // Uniforms expected by this geometry shader code.
-            // Global uniforms (u_time, u_resolution, u_mouse, u_morphFactor, u_glitchIntensity, u_rotationSpeed, u_dimension)
-            // are passed as arguments to getLatticeEffectColor.
-            // gridDensity argument to getLatticeEffectColor is expected to be u_gridDensity_lattice.
+struct LatticeUniforms {
+    edgeLineWidth: f32,
+    vertexSize: f32,
+    distortP_pZ_factor: f32,
+    distortP_morphCoeffs: vec3<f32>,
+    distortP_timeFactorScale: f32,
+    wCoord_pLengthFactor: f32,
+    wCoord_timeFactor: f32,
+    wCoord_dimOffset: f32,
+    rotXW_timeFactor: f32,
+    rotYW_timeFactor: f32,
+    rotZW_timeFactor: f32,
+    glitch_baseFactor: f32,
+    glitch_sinFactor: f32,
+    glitch_rOffsetCoeffs: vec2<f32>,
+    glitch_gOffsetCoeffs: vec2<f32>,
+    glitch_bOffsetCoeffs: vec2<f32>,
+    moire_densityFactor1: f32,
+    moire_densityFactor2: f32,
+    moire_blendFactor: f32,
+    moire_mixCoeffs: vec3<f32>,
+    baseColor: vec3<f32>,
+    effectColor: vec3<f32>,
+    glow_color: vec3<f32>,
+    glow_timeFactor: f32,
+    glow_amplitudeOffset: f32,
+    glow_amplitudeFactor: f32,
+    vignette_inner: f32,
+    vignette_outer: f32,
+    // Add padding if needed for std140, though WebGPU default layout is often sufficient
+    // For vec2, next element must be 8-byte aligned. For vec3, 16-byte.
+    // Example: _pad0: f32, (if distortP_morphCoeffs was vec2 and next was f32)
+};
+`;
+    }
 
-            // Specific uniforms for FullScreenLatticeGeometry:
-            uniform float u_lattice_edgeLineWidth;
-            uniform float u_lattice_vertexSize;
-            uniform float u_lattice_distortP_pZ_factor;
-            uniform vec3  u_lattice_distortP_morphCoeffs; // x for p.x, y for p.y, z for p.z distortion
-            uniform float u_lattice_distortP_timeFactorScale; // Scales the 'timeFactor = time * 0.2 * rotationSpeed' for distortion part
+    getUniformGroupLayoutEntries(groupIndex = 1) { // eslint-disable-line no-unused-vars
+        return [{
+            binding: 0, // Binding index within this group for LatticeUniforms
+            visibility: GPUShaderStage.FRAGMENT,
+            buffer: { type: 'uniform' }
+        }];
+    }
 
-            uniform float u_lattice_wCoord_pLengthFactor;
-            uniform float u_lattice_wCoord_timeFactor;
-            uniform float u_lattice_wCoord_dimOffset; // e.g. -3.0 to make (dimension - 3.0)
+    getWGSLShaderCode(type = 'fragment_module') { // eslint-disable-line no-unused-vars
+        // This geometry provides a full fragment shader replacement.
+        // It assumes GlobalUniforms and DataChannels structs are defined and bound at group 0.
+        // It also assumes helper rotation functions (rotXW, etc.) and project4Dto3D are available.
+        // These helpers are currently in base_fragment.wgsl, so this code would run in that context.
+        return `
+${this.getUniformBufferWGSLStruct()}
+@group(1) @binding(0) var<uniform> latticeUniforms: LatticeUniforms;
 
-            uniform float u_lattice_rotXW_timeFactor;
-            uniform float u_lattice_rotYW_timeFactor;
-            uniform float u_lattice_rotZW_timeFactor;
+// Helper Functions (could be imported/included from a common module in a more advanced setup)
+// For now, assuming these are available from base_fragment.wgsl or similar common scope.
+// If not, they need to be included here or ShaderManager needs to prepend them.
+// For simplicity of this method, we assume they are present in the final shader.
+// mat4x4<f32> lattice_rotateXY... etc.
+// vec3<f32> lattice_project4Dto3D... etc.
 
-            uniform float u_lattice_glitch_baseFactor;
-            uniform float u_lattice_glitch_sinFactor;
-            uniform vec2  u_lattice_glitch_rOffsetCoeffs;
-            uniform vec2  u_lattice_glitch_gOffsetCoeffs;
-            uniform vec2  u_lattice_glitch_bOffsetCoeffs;
+fn lattice_edges(p: vec3<f32>, gridSize: f32, lineWidth: f32) -> f32 {
+    let grid: vec3<f32> = fract(p * gridSize);
+    let edges: vec3<f32> = 1.0 - smoothstep(0.0, lineWidth, abs(grid - 0.5));
+    return max(max(edges.x, edges.y), edges.z);
+}
 
-            uniform float u_lattice_moire_densityFactor1;
-            uniform float u_lattice_moire_densityFactor2;
-            uniform float u_lattice_moire_blendFactor;
-            uniform vec3  u_lattice_moire_mixCoeffs; // x for r, y for g, z for b
+fn lattice_vertices(p: vec3<f32>, gridSize: f32, vertexSize: f32) -> f32 {
+    let grid: vec3<f32> = fract(p * gridSize);
+    let distToVertex: vec3<f32> = min(grid, 1.0 - grid);
+    let minDist: f32 = min(min(distToVertex.x, distToVertex.y), distToVertex.z);
+    return 1.0 - smoothstep(0.0, vertexSize, minDist);
+}
 
-            uniform vec3  u_lattice_baseColor;
-            uniform vec3  u_lattice_effectColor;
-            uniform vec3  u_lattice_glow_color;
-            uniform float u_lattice_glow_timeFactor;
-            uniform float u_lattice_glow_amplitudeOffset;
-            uniform float u_lattice_glow_amplitudeFactor;
+fn calculateHypercubeLatticeValue(
+    p_calc: vec3<f32>,
+    morphFactor_calc: f32,
+    gridSize_calc: f32,
+    time_calc: f32,
+    rotationSpeed_calc: f32,
+    dimension_calc: f32,
+    globalUniforms: GlobalUniforms // Pass globalUniforms if needed by helpers
+) -> f32 {
+    let edges: f32 = lattice_edges(p_calc, gridSize_calc, latticeUniforms.edgeLineWidth);
+    let vertices: f32 = lattice_vertices(p_calc, gridSize_calc, latticeUniforms.vertexSize);
 
-            uniform float u_lattice_vignette_inner;
-            uniform float u_lattice_vignette_outer;
+    let timeFactor: f32 = time_calc * latticeUniforms.distortP_timeFactorScale * rotationSpeed_calc;
 
+    var distortedP: vec3<f32> = p_calc;
+    distortedP.x = distortedP.x + sin(p_calc.z * latticeUniforms.distortP_pZ_factor + timeFactor) * morphFactor_calc * latticeUniforms.distortP_morphCoeffs.x;
+    distortedP.y = distortedP.y + cos(p_calc.x * latticeUniforms.distortP_pZ_factor + timeFactor) * morphFactor_calc * latticeUniforms.distortP_morphCoeffs.y;
+    distortedP.z = distortedP.z + sin(p_calc.y * latticeUniforms.distortP_pZ_factor + timeFactor) * morphFactor_calc * latticeUniforms.distortP_morphCoeffs.z;
 
-            // Helper Functions from HypercubeLatticeEffect (prefixed with lattice_ to avoid potential conflicts)
-            mat4 lattice_rotateXY(float theta) {
-                float c = cos(theta); float s = sin(theta);
-                return mat4(c,-s,0,0, s,c,0,0, 0,0,1,0, 0,0,0,1);
-            }
-            mat4 lattice_rotateXZ(float theta) {
-                float c = cos(theta); float s = sin(theta);
-                return mat4(c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1);
-            }
-            mat4 lattice_rotateXW(float theta) {
-                float c = cos(theta); float s = sin(theta);
-                return mat4(c,0,0,-s, 0,1,0,0, 0,0,1,0, s,0,0,c);
-            }
-            mat4 lattice_rotateYZ(float theta) {
-                float c = cos(theta); float s = sin(theta);
-                return mat4(1,0,0,0, 0,c,-s,0, 0,s,c,0, 0,0,0,1);
-            }
-            mat4 lattice_rotateYW(float theta) {
-                float c = cos(theta); float s = sin(theta);
-                return mat4(1,0,0,0, 0,c,0,-s, 0,0,1,0, 0,s,0,c);
-            }
-            mat4 lattice_rotateZW(float theta) {
-                float c = cos(theta); float s = sin(theta);
-                return mat4(1,0,0,0, 0,1,0,0, 0,0,c,-s, 0,0,s,c);
-            }
+    if (dimension_calc > 3.0) {
+        let w: f32 = sin(length(p_calc) * latticeUniforms.wCoord_pLengthFactor + time_calc * latticeUniforms.wCoord_timeFactor) * (dimension_calc + latticeUniforms.wCoord_dimOffset);
+        var p4d: vec4<f32> = vec4<f32>(distortedP, w);
 
-            vec3 lattice_project4Dto3D(vec4 p) {
-                float w = 2.0 / (2.0 + p.w);
-                return vec3(p.x * w, p.y * w, p.z * w);
-            }
+        p4d = rotXW(timeFactor * latticeUniforms.rotXW_timeFactor) * p4d; // Assuming rotXW is globally available
+        p4d = rotYW(timeFactor * latticeUniforms.rotYW_timeFactor) * p4d; // Assuming rotYW is globally available
+        p4d = rotZW(timeFactor * latticeUniforms.rotZW_timeFactor) * p4d; // Assuming rotZW is globally available
 
-            // vec2 lattice_project3Dto2D(vec3 p) { // Not directly used if output is color
-            //     float z = 2.0 / (3.0 + p.z);
-            //     return vec2(p.x * z, p.y * z);
-            // }
+        distortedP = project4Dto3D_placeholder(p4d); // Assuming project4Dto3D_placeholder is globally available
+    }
 
-            // float lattice_gridLine(float position, float width) { // Seems unused in final main
-            //     float halfW = width * 0.5;
-            //     return smoothstep(0.0, halfW, halfW - abs(position));
-            // }
+    let distortedEdges: f32 = lattice_edges(distortedP, gridSize_calc, latticeUniforms.edgeLineWidth);
+    let distortedVertices: f32 = lattice_vertices(distortedP, gridSize_calc, latticeUniforms.vertexSize);
 
-            // float lattice_distanceToGridPoint(vec3 p, float gridSize) { // Seems unused in final main
-            //     vec3 gridPos = floor(p * gridSize + 0.5) / gridSize;
-            //     return length(p - gridPos);
-            // }
+    let final_edges: f32 = mix(edges, distortedEdges, morphFactor_calc); // Use morphFactor_calc
+    let final_vertices: f32 = mix(vertices, distortedVertices, morphFactor_calc); // Use morphFactor_calc
 
-            float lattice_edges(vec3 p, float gridSize, float lineWidth) {
-                vec3 grid = fract(p * gridSize);
-                vec3 edges = 1.0 - smoothstep(0.0, lineWidth, abs(grid - 0.5));
-                return max(max(edges.x, edges.y), edges.z);
-            }
+    return max(final_edges, final_vertices);
+}
 
-            float lattice_vertices(vec3 p, float gridSize, float vertexSize) {
-                vec3 grid = fract(p * gridSize);
-                vec3 distToVertex = min(grid, 1.0 - grid);
-                float minDist = min(min(distToVertex.x, distToVertex.y), distToVertex.z);
-                return 1.0 - smoothstep(0.0, vertexSize, minDist);
-            }
+// Main fragment entry point for this geometry effect
+fn calculateFullScreenLatticeFragment(
+    fsInput_uv: vec2<f32>, // from VertexOutput.uv
+    globalUniforms: GlobalUniforms,
+    dataChannels: DataChannels
+) -> vec4<f32> {
+    var uv_norm: vec2<f32> = fsInput_uv;
+    let aspectRatio: f32 = globalUniforms.resolution.x / globalUniforms.resolution.y;
+    uv_norm.x = uv_norm.x * aspectRatio;
 
-            float calculateHypercubeLatticeValue(vec3 p_calc, float morphFactor_calc, float gridSize_calc, float time_calc, float rotationSpeed_calc, float dimension_calc) {
-                // Use parameterized edgeLineWidth and vertexSize
-                float edges = lattice_edges(p_calc, gridSize_calc, u_lattice_edgeLineWidth);
-                float vertices = lattice_vertices(p_calc, gridSize_calc, u_lattice_vertexSize);
+    let center: vec2<f32> = vec2<f32>(globalUniforms.mouse.x * aspectRatio, globalUniforms.mouse.y);
+    var p_base: vec3<f32> = vec3<f32>(uv_norm - center, 0.0);
 
-                // Use parameterized timeFactorScale for distortion time effect
-                float timeFactor = time_calc * u_lattice_distortP_timeFactorScale * rotationSpeed_calc;
+    let timeRotation: f32 = globalUniforms.time * 0.2 * globalUniforms.rotationSpeed;
+    // Construct mat2x2<f32> correctly
+    let rotation: mat2x2<f32> = mat2x2<f32>(cos(timeRotation), -sin(timeRotation), sin(timeRotation), cos(timeRotation));
+    p_base.xy = rotation * p_base.xy;
+    p_base.z = sin(globalUniforms.time * 0.1) * 0.5;
 
-                vec3 distortedP = p_calc;
-                // Use parameterized distortion factors
-                distortedP.x += sin(p_calc.z * u_lattice_distortP_pZ_factor + timeFactor) * morphFactor_calc * u_lattice_distortP_morphCoeffs.x;
-                distortedP.y += cos(p_calc.x * u_lattice_distortP_pZ_factor + timeFactor) * morphFactor_calc * u_lattice_distortP_morphCoeffs.y; // Assuming pZ_factor can be reused for pX
-                distortedP.z += sin(p_calc.y * u_lattice_distortP_pZ_factor + timeFactor) * morphFactor_calc * u_lattice_distortP_morphCoeffs.z; // Assuming pZ_factor can be reused for pY
+    let glitchAmount: f32 = globalUniforms.glitchIntensity * (latticeUniforms.glitch_baseFactor + latticeUniforms.glitch_baseFactor * sin(globalUniforms.time * latticeUniforms.glitch_sinFactor));
 
-                if (dimension_calc > 3.0) { // This 3.0 could be a uniform u_lattice_minWDimension
-                  // Parameterized w-coordinate calculation
-                  float w = sin(length(p_calc) * u_lattice_wCoord_pLengthFactor + time_calc * u_lattice_wCoord_timeFactor) * (dimension_calc + u_lattice_wCoord_dimOffset);
-                  vec4 p4d = vec4(distortedP, w);
+    let rOffset: vec2<f32> = glitchAmount * latticeUniforms.glitch_rOffsetCoeffs;
+    let gOffset: vec2<f32> = glitchAmount * latticeUniforms.glitch_gOffsetCoeffs;
+    let bOffset: vec2<f32> = glitchAmount * latticeUniforms.glitch_bOffsetCoeffs;
 
-                  // Parameterized 4D rotations
-                  p4d = lattice_rotateXW(timeFactor * u_lattice_rotXW_timeFactor) * p4d;
-                  p4d = lattice_rotateYW(timeFactor * u_lattice_rotYW_timeFactor) * p4d;
-                  p4d = lattice_rotateZW(timeFactor * u_lattice_rotZW_timeFactor) * p4d;
+    // Pass globalUniforms to calculateHypercubeLatticeValue if its helpers need it
+    let r_val: f32 = calculateHypercubeLatticeValue(vec3<f32>(p_base.xy + rOffset, p_base.z), globalUniforms.morphFactor, globalUniforms.gridDensity_lattice, globalUniforms.time, globalUniforms.rotationSpeed, globalUniforms.dimension, globalUniforms);
+    let g_val: f32 = calculateHypercubeLatticeValue(vec3<f32>(p_base.xy + gOffset, p_base.z), globalUniforms.morphFactor, globalUniforms.gridDensity_lattice, globalUniforms.time, globalUniforms.rotationSpeed, globalUniforms.dimension, globalUniforms);
+    let b_val: f32 = calculateHypercubeLatticeValue(vec3<f32>(p_base.xy + bOffset, p_base.z), globalUniforms.morphFactor, globalUniforms.gridDensity_lattice, globalUniforms.time, globalUniforms.rotationSpeed, globalUniforms.dimension, globalUniforms);
 
-                  distortedP = lattice_project4Dto3D(p4d);
-                }
+    let moireGrid1: f32 = calculateHypercubeLatticeValue(p_base, globalUniforms.morphFactor, globalUniforms.gridDensity_lattice * latticeUniforms.moire_densityFactor1, globalUniforms.time, globalUniforms.rotationSpeed, globalUniforms.dimension, globalUniforms);
+    let moireGrid2: f32 = calculateHypercubeLatticeValue(p_base, globalUniforms.morphFactor, globalUniforms.gridDensity_lattice * latticeUniforms.moire_densityFactor2, globalUniforms.time, globalUniforms.rotationSpeed, globalUniforms.dimension, globalUniforms);
+    let moire: f32 = abs(moireGrid1 - moireGrid2) * latticeUniforms.moire_blendFactor;
 
-                // Use parameterized edgeLineWidth and vertexSize again for distorted version
-                float distortedEdges = lattice_edges(distortedP, gridSize_calc, u_lattice_edgeLineWidth);
-                float distortedVertices = lattice_vertices(distortedP, gridSize_calc, u_lattice_vertexSize);
+    let mixed_r: f32 = mix(r_val, moire, latticeUniforms.moire_mixCoeffs.x);
+    let mixed_g: f32 = mix(g_val, moire, latticeUniforms.moire_mixCoeffs.y);
+    let mixed_b: f32 = mix(b_val, moire, latticeUniforms.moire_mixCoeffs.z);
 
-                edges = mix(edges, distortedEdges, morphFactor);
-                vertices = mix(vertices, distortedVertices, morphFactor);
+    var final_color: vec3<f32> = mix(latticeUniforms.baseColor, latticeUniforms.effectColor, vec3<f32>(mixed_r, mixed_g, mixed_b));
+    final_color = final_color + latticeUniforms.glow_color * (latticeUniforms.glow_amplitudeOffset + latticeUniforms.glow_amplitudeFactor * sin(globalUniforms.time * latticeUniforms.glow_timeFactor));
 
-                return max(edges, vertices);
-            }
+    let vignette: f32 = 1.0 - smoothstep(latticeUniforms.vignette_inner, latticeUniforms.vignette_outer, length(uv_norm - vec2<f32>(center.x, center.y))); // Ensure center is vec2 for length
+    final_color = final_color * vignette; // Corrected: GLSL was color *= vignette
 
-            // This function will be called by the main fragment shader
-            // It replaces the 'main()' function of the original HypercubeLatticeEffect shader
-            vec3 getLatticeEffectColor(vec2 screenUV, float time, vec2 resolution, vec2 mouse,
-                                       float morphFactor, float glitchIntensity, float rotationSpeed,
-                                       float dimension, float gridDensity) {
+    return vec4<f32>(final_color, 1.0);
+}
+`;
+    }
 
-                // screenUV is v_uv from main shader. Global uniforms (time, resolution, mouse, etc.) are passed as args.
-                // gridDensity arg is u_gridDensity_lattice.
-                vec2 uv_norm = screenUV;
-
-                float aspectRatio = resolution.x / resolution.y;
-                uv_norm.x *= aspectRatio;
-
-                vec2 center = vec2(mouse.x * aspectRatio, mouse.y); // mouse is global u_mouse
-
-                vec3 p_base = vec3(uv_norm - center, 0.0);
-
-                // Original timeRotation used 0.2, can be parameterized if needed: u_lattice_mainRotationFactor
-                float timeRotation = time * 0.2 * rotationSpeed;
-                mat2 rotation = mat2(cos(timeRotation), -sin(timeRotation), sin(timeRotation), cos(timeRotation));
-                p_base.xy = rotation * p_base.xy;
-
-                 // Original p.z movement, can be parameterized: u_lattice_pz_timeFactor, u_lattice_pz_amplitude
-                p_base.z = sin(time * 0.1) * 0.5;
-
-                // Parameterized glitch amount
-                float glitchAmount = glitchIntensity * (u_lattice_glitch_baseFactor + u_lattice_glitch_baseFactor * sin(time * u_lattice_glitch_sinFactor));
-
-                // Parameterized glitch offsets
-                vec2 rOffset = glitchAmount * u_lattice_glitch_rOffsetCoeffs;
-                vec2 gOffset = glitchAmount * u_lattice_glitch_gOffsetCoeffs;
-                vec2 bOffset = glitchAmount * u_lattice_glitch_bOffsetCoeffs;
-
-                float r_val = calculateHypercubeLatticeValue(vec3(p_base.xy + rOffset, p_base.z), morphFactor, gridDensity, time, rotationSpeed, dimension);
-                float g_val = calculateHypercubeLatticeValue(vec3(p_base.xy + gOffset, p_base.z), morphFactor, gridDensity, time, rotationSpeed, dimension);
-                float b_val = calculateHypercubeLatticeValue(vec3(p_base.xy + bOffset, p_base.z), morphFactor, gridDensity, time, rotationSpeed, dimension);
-
-                // Parameterized Moiré
-                float moireGrid1 = calculateHypercubeLatticeValue(p_base, morphFactor, gridDensity * u_lattice_moire_densityFactor1, time, rotationSpeed, dimension);
-                float moireGrid2 = calculateHypercubeLatticeValue(p_base, morphFactor, gridDensity * u_lattice_moire_densityFactor2, time, rotationSpeed, dimension);
-                float moire = abs(moireGrid1 - moireGrid2) * u_lattice_moire_blendFactor;
-
-                r_val = mix(r_val, moire, u_lattice_moire_mixCoeffs.r);
-                g_val = mix(g_val, moire, u_lattice_moire_mixCoeffs.g);
-                b_val = mix(b_val, moire, u_lattice_moire_mixCoeffs.b);
-
-                // Use parameterized base and effect colors
-                vec3 final_color = mix(u_lattice_baseColor, u_lattice_effectColor, vec3(r_val, g_val, b_val));
-
-                // Parameterized pulsing glow
-                final_color += u_lattice_glow_color * (u_lattice_glow_amplitudeOffset + u_lattice_glow_amplitudeFactor * sin(time * u_lattice_glow_timeFactor));
-
-                // Parameterized vignette
-                float vignette = 1.0 - smoothstep(u_lattice_vignette_inner, u_lattice_vignette_outer, length(uv_norm - vec2(center.x, center.y)));
-                color *= vignette;
-
-                return color;
-            }
-        `;
+    /** @deprecated Use getWGSLShaderCode instead */
+    getShaderCode() {
+        throw new Error("FullScreenLatticeGeometry: getShaderCode() is deprecated. Use getWGSLShaderCode() which returns a full WGSL fragment shader source.");
     }
 }
 

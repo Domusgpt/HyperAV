@@ -9,9 +9,9 @@
  * - Optimized audio analysis parameters for better visual performance
  */
 import HypercubeCore from '../core/HypercubeCore.js';
-import ShaderManager from '../core/ShaderManager.js';
-import GeometryManager from '../core/GeometryManager.js';
-import ProjectionManager from '../core/ProjectionManager.js';
+import ShaderManager from '../core/ShaderManager.js'; // May not be needed directly here anymore
+import GeometryManager from '../core/GeometryManager.js'; // May not be needed directly here anymore
+import ProjectionManager from '../core/ProjectionManager.js'; // May not be needed directly here anymore
 import VisualizerController from '../controllers/VisualizerController.js'; // Import VisualizerController
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -69,8 +69,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // State
-    let gl = null, audioContext = null, analyser = null, micSource = null;
-    let mainVisualizerCore = null, geometryManager = null, projectionManager = null, shaderManager = null;
+    let audioContext = null, analyser = null, micSource = null; // gl is removed
+    let mainVisualizerCore = null; // shaderManager, geometryManager, projectionManager removed from here
+                                   // as HypercubeCore will manage them or they are passed differently.
     
     // Enhanced audio analysis data including pitch detection
     let analysisData = {
@@ -876,55 +877,183 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function initialize() {
+        // Ensure setupControls has run to initialize visualParams with slider defaults
+        // if HypercubeCore options depend on them directly at construction.
+        // If visualParams are only applied later via vizController.setVisualStyle, this is less critical here.
+        setupControls();
+
+        const baseVertexWGSL = `
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn main(@location(0) position: vec2<f32>) -> VertexOutput {
+    var out: VertexOutput;
+    out.uv = position * 0.5 + 0.5;
+    out.clip_position = vec4<f32>(position, 0.0, 1.0);
+    return out;
+}
+`;
+
+        const baseFragmentWGSL = `
+// {{INJECTED_GEOMETRY_UNIFORMS_STRUCT}}
+// {{INJECTED_PROJECTION_UNIFORMS_STRUCT}}
+
+struct VertexInput {
+    @location(0) uv: vec2<f32>,
+};
+
+struct GlobalUniforms {
+    resolution: vec2<f32>,
+    time: f32,
+    dimension: f32,
+    morphFactor: f32,
+    rotationSpeed: f32,
+    universeModifier: f32,
+    patternIntensity: f32,
+    gridDensity: f32,
+    gridDensity_lattice: f32,
+    lineThickness: f32,
+    shellWidth: f32,
+    tetraThickness: f32,
+    glitchIntensity: f32,
+    colorShift: f32,
+    mouse: vec2<f32>,
+    isFullScreenEffect: u32,
+    primaryColor: vec3<f32>,
+    secondaryColor: vec3<f32>,
+    backgroundColor: vec3<f32>,
+};
+@group(0) @binding(0) var<uniform> globalUniforms: GlobalUniforms;
+
+struct DataChannels {
+    pmk_channels: array<f32, 64>,
+};
+@group(0) @binding(1) var<uniform> dataChannels: DataChannels;
+
+// Group 1: Geometry Uniforms (struct definition injected by HypercubeCore)
+// @group(1) @binding(0) var<uniform> geometryUniforms: GeometrySpecificUniforms;
+
+// Group 2: Projection Uniforms (struct definition injected by HypercubeCore)
+// @group(2) @binding(0) var<uniform> projectionUniforms: ProjectionSpecificUniforms;
+
+
+// Common math/rotation functions
+fn rotXW(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(c,0,0,-s,  0,1,0,0,  0,0,1,0,  s,0,0,c); }
+fn rotYW(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(1,0,0,0,  0,c,0,-s,  0,0,1,0,  0,s,0,c); }
+fn rotZW(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(1,0,0,0,  0,1,0,0,  0,0,c,-s,  0,0,s,c); }
+fn rotXY(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(c,-s,0,0,  s,c,0,0,  0,0,1,0,  0,0,0,1); }
+fn rotYZ(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(1,0,0,0,  0,c,-s,0,  0,s,c,0,  0,0,0,1); }
+fn rotXZ(a: f32) -> mat4x4<f32> { let c = cos(a); let s = sin(a); return mat4x4<f32>(c,0,-s,0,  0,1,0,0,  s,0,c,0,  0,0,0,1); }
+
+fn rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    var p: vec4<f32>;
+    if (c.g < c.b) { p = vec4<f32>(c.bg, K.w, K.z); }
+    else { p = vec4<f32>(c.gb, K.x, K.y); }
+    var q: vec4<f32>;
+    if (c.r < p.x) { q = vec4<f32>(p.xyw, c.r); }
+    else { q = vec4<f32>(c.r, p.yzx); }
+    let d = q.x - min(q.w, q.y);
+    let e = 1.0e-10;
+    return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+}
+
+// {{INJECTED_PROJECTION_MODULE}}
+// {{INJECTED_GEOMETRY_MODULE}}
+
+@fragment
+fn main(fsInput: VertexInput) -> @location(0) vec4<f32> {
+    var finalColor: vec3<f32>;
+
+    // The specific geometry module (e.g. FullScreenLattice's calculateFullScreenLatticeFragment)
+    // or the SDF path below will be determined by HypercubeCore's shader composition.
+    // This 'main' function in base_fragment.wgsl is primarily for the SDF path.
+    // Fullscreen effects might replace this main function entirely or be called from here.
+    // HypercubeCore._getWGSLShaderSources determines the final fragmentEntryPoint.
+
+    if (globalUniforms.isFullScreenEffect == 1u) {
+        // This path expects a function like 'calculateFullScreenLatticeFragment' to be the entry point
+        // or for the injected geometry module to effectively become the main function.
+        // The placeholder call here will be replaced by HypercubeCore if it's a fullscreen effect
+        // that doesn't provide its own @fragment main.
+        // For now, direct call to what FullScreenLatticeGeometry provides:
+        finalColor = calculateFullScreenLatticeFragment(fsInput.uv, globalUniforms, dataChannels);
+    } else {
+        // Standard SDF rendering path
+        let aspect = globalUniforms.resolution.x / globalUniforms.resolution.y;
+        let uv = (fsInput.uv * 2.0 - 1.0) * vec2<f32>(aspect, 1.0);
+        var rayOrigin = vec3<f32>(0.0, 0.0, -2.5);
+        var rayDirection = normalize(vec3<f32>(uv, 1.0));
+        let camRotY = globalUniforms.time * 0.05 * globalUniforms.rotationSpeed + dataChannels.pmk_channels[1] * 0.1;
+        let camRotX = sin(globalUniforms.time * 0.03 * globalUniforms.rotationSpeed) * 0.15 + dataChannels.pmk_channels[2] * 0.1;
+        let camMat = rotXY(camRotX) * rotYZ(camRotY);
+        rayDirection = (camMat * vec4<f32>(rayDirection, 0.0)).xyz;
+        let p_world = rayDirection * 1.5; // World space point for SDF
+
+        // These calls will be dynamically replaced by HypercubeCore._getWGSLShaderSources
+        // to call the actual SDF and projection functions.
+        // e.g. projectPerspective(vec4<f32>(p_world, w_coord), globalUniforms, dataChannels, projectionUniforms)
+        //      calculateHypercubeSDF(projected_point, globalUniforms, dataChannels, geometryUniforms)
+        // For now, this base shader uses generic placeholder names that must be defined by the injected modules.
+        // The actual projection (p4d -> projectedP) and SDF (projectedP -> sdfValue) logic
+        // is within the functions provided by geometry/projection managers.
+        // The base_fragment.wgsl provides the "shell" (raymarching, lighting, etc.)
+        // This example is highly simplified, actual raymarching loop is omitted.
+        let sdfValue = calculateLattice_placeholder(p_world, globalUniforms, dataChannels /*, geometryUniforms */); // geomUniforms might be optional if not defined
+
+        finalColor = mix(globalUniforms.backgroundColor, globalUniforms.primaryColor, sdfValue);
+        finalColor = mix(finalColor, globalUniforms.secondaryColor, smoothstep(0.2, 0.7, dataChannels.pmk_channels[1]) * sdfValue * 0.6);
+
+        if (abs(globalUniforms.colorShift) > 0.01) {
+            var hsv = rgb2hsv(finalColor);
+            hsv.x = fract(hsv.x + globalUniforms.colorShift * 0.5 + dataChannels.pmk_channels[2] * 0.1);
+            finalColor = hsv2rgb(hsv);
+        }
+        finalColor = finalColor * (0.8 + globalUniforms.patternIntensity * 0.7);
+
+        if (globalUniforms.glitchIntensity > 0.001) {
+            // Simplified glitch, full version would re-evaluate SDF with offset rays
+            let glitch = globalUniforms.glitchIntensity * (0.5 + 0.5 * sin(globalUniforms.time * 8.0 + p_world.y * 10.0));
+            finalColor.r = finalColor.r + glitch * 0.2;
+            finalColor.b = finalColor.b - glitch * 0.15;
+        }
+        finalColor = pow(clamp(finalColor, vec3<f32>(0.0), vec3<f32>(1.5)), vec3<f32>(0.9));
+    }
+    return vec4<f32>(finalColor, 1.0);
+}
+`;
         try {
-            // Set status
-            statusDiv.textContent = "Initializing WebGL...";
+            statusDiv.textContent = "Initializing WebGPU...";
             
-            // Initialize WebGL context with antialiasing
-            gl = canvas.getContext('webgl', { 
-                antialias: true,
-                powerPreference: 'high-performance',
-                desynchronized: true
-            }) || canvas.getContext('experimental-webgl'); 
+            const options = {
+                geometryType: geometrySelect?.value ?? 'hypercube',
+                projectionMethod: projectionSelect?.value ?? 'perspective',
+                ...visualParams, // Spread initial slider values or defaults
+                callbacks: {
+                    onError: (err) => {
+                        statusDiv.textContent = `Vis Error: ${err.message}`;
+                        console.error("Visualizer error:", err);
+                    },
+                    onRender: () => { /* Optional render callback */ }
+                }
+            };
             
-            if (!gl) throw new Error("WebGL context creation failed");
+            // Pass null for shaderManager instance, HypercubeCore will create its own.
+            // Pass the WGSL shader strings.
+            mainVisualizerCore = new HypercubeCore(canvas, null, baseVertexWGSL, baseFragmentWGSL, options);
             
-            // Initialize core managers
-            statusDiv.textContent = "Creating geometry...";
-            geometryManager = new GeometryManager();
-            projectionManager = new ProjectionManager();
+            await mainVisualizerCore._asyncInitialization; // Wait for WebGPU device and context
             
-            // Initialize shader manager
-            statusDiv.textContent = "Compiling shaders...";
-            shaderManager = new ShaderManager(gl, geometryManager, projectionManager);
-            
-            // Setup UI controls
-            setupControls();
-            
-            // Create main visualizer core with error callback
-            statusDiv.textContent = "Creating visualization core...";
-            mainVisualizerCore = new HypercubeCore(canvas, shaderManager, {
-                 geometryType: 'hypercube', // MODIFIED for testing SDF geometries
-                 projectionMethod: projectionSelect?.value ?? 'perspective',
-                 ...visualParams,
-                 callbacks: { 
-                     onError: (err) => { 
-                         statusDiv.textContent = `Vis Error: ${err.message}`; 
-                         console.error("Visualizer error:", err); 
-                     },
-                     onRender: () => {
-                         // Optional render callback for frame timing
-                     }
-                 }
-            });
-            
-            // Check if shaders compiled successfully
-            if (!mainVisualizerCore.shaderManager.programs[mainVisualizerCore.state.shaderProgramName]) {
-                throw new Error("Initial shader compilation failed");
-            }
-            
-            // Log success
-            console.log("Visualizer Core initialized successfully");
+            console.log("HypercubeCore WebGPU initialized successfully.");
             statusDiv.textContent = "Visualization ready";
         } catch (err) { 
             console.error("Visualization initialization error:", err); 
@@ -971,7 +1100,130 @@ document.addEventListener('DOMContentLoaded', () => {
         
         console.log("Initialization complete - visualization running");
     }
-    initialize();
+    initialize().then(() => {
+        // This block runs after initialize() completes (successfully or with error handling within it)
+        if (mainVisualizerCore && mainVisualizerCore.device) {
+            const initialDataChannelDef = {
+                uboChannels: [
+                    { snapshotField: 'audio_bass', uboChannelIndex: 0, defaultValue: 0.0 },
+                    { snapshotField: 'audio_mid', uboChannelIndex: 1, defaultValue: 0.0 },
+                    { snapshotField: 'audio_high', uboChannelIndex: 2, defaultValue: 0.0 },
+                    { snapshotField: 'time_seconds', uboChannelIndex: 3, defaultValue: 0.0 },
+                    { snapshotField: 'pitch_frequency', uboChannelIndex: 4, defaultValue: 0.0 },
+                    { snapshotField: 'pitch_strength', uboChannelIndex: 5, defaultValue: 0.0 },
+                    { snapshotField: 'energy_factor', uboChannelIndex: 6, defaultValue: 0.0 },
+                    { snapshotField: 'dissonance_factor', uboChannelIndex: 7, defaultValue: 0.0 }
+                ],
+                directParams: [
+                    { snapshotField: 'ui_rotationSpeed', coreStateName: 'rotationSpeed', defaultValue: visualParams.rotationSpeed },
+                    { snapshotField: 'ui_morphFactor', coreStateName: 'morphFactor', defaultValue: visualParams.morphFactor },
+                    { snapshotField: 'ui_glitchIntensity', coreStateName: 'glitchIntensity', defaultValue: visualParams.glitchIntensity }
+                ]
+            };
+            const baseParams = {
+                colorShift: 0.05, patternIntensity: 1.2,
+                proj_perspective_baseDistance: 2.8,
+                geom_hypercube_baseSpeedFactor: 1.1,
+                lattice_edgeLineWidth: 0.025
+            };
+
+            vizController = new VisualizerController(mainVisualizerCore, {
+                dataChannelDefinition: initialDataChannelDef,
+                baseParameters: baseParams
+            });
+
+            // --- Initialize Data Mapping Testbed UI (Moved here to ensure vizController is ready) ---
+            if (dataSnapshotInput) {
+                dataSnapshotInput.value = JSON.stringify({
+                    "temperature": 75,
+                    "status_code": "WARN",
+                    "light_color": "#FF8800",
+                    "raw_level": 120,
+                    "audio_bass": 0.6,
+                    "audio_mid": 0.3,
+                    "audio_high": 0.1,
+                    "time_seconds": 0,
+                    "pitch_frequency": 220,
+                    "pitch_strength": 0.9,
+                    "energy_factor": 0.4,
+                    "dissonance_factor": 0.2
+                }, null, 2);
+            }
+            if (mappingRulesInput) {
+                mappingRulesInput.value = JSON.stringify({
+                    "ubo": [
+                        {
+                            "snapshotField": "temperature", "uboChannelIndex": 0, "defaultValue": 60,
+                            "transform": { "name": "linearScale", "domain": [50, 100], "range": [0, 1] }
+                        },
+                        {
+                            "snapshotField": "raw_level", "uboChannelIndex": 1, "defaultValue": 0,
+                            "transform": { "name": "clamp", "min": 0, "max": 100 }
+                        },
+                        {
+                            "snapshotField": "audio_mid", "uboChannelIndex": 2, "defaultValue": 0.01,
+                            "transform": { "name": "logScale", "domain": [0.01, 1], "range": [0, 1] }
+                        }
+                    ],
+                    "direct": {
+                        "status_code": {
+                            "coreStateName": "statusIndicatorColor", "defaultValue": [0.5, 0.5, 0.5],
+                            "transform": {
+                                "name": "stringToEnum",
+                                "map": { "OK": [0,1,0,1], "WARN": [1,1,0,1], "ERROR": [1,0,0,1] },
+                                "defaultOutput": [0.5,0.5,0.5,1]
+                            }
+                        },
+                        "light_color": {
+                            "coreStateName": "lightColorVec", "defaultValue": [1,1,1,1],
+                            "transform": {"name": "colorStringToVec", "defaultOutput": [0,0,0,1]}
+                        }
+                    }
+                }, null, 2);
+            }
+
+            updateDataButton?.addEventListener('click', () => {
+                if (!vizController) return;
+                try {
+                    const snapshot = JSON.parse(dataSnapshotInput.value);
+                    vizController.updateData(snapshot);
+                    console.log("Data snapshot updated via UI button:", snapshot);
+                    if(statusDiv) statusDiv.textContent = "Snapshot updated.";
+                } catch (e) {
+                    console.error("Error parsing Data Snapshot JSON:", e);
+                    if(statusDiv) statusDiv.textContent = "Error: Invalid Data Snapshot JSON.";
+                    alert("Error in Data Snapshot JSON: " + e.message);
+                }
+            });
+
+            setMappingRulesButton?.addEventListener('click', () => {
+                if (!vizController) return;
+                try {
+                    const rules = JSON.parse(mappingRulesInput.value);
+                    vizController.setDataMappingRules(rules);
+                    console.log("Mapping rules set via UI button:", rules);
+                    if(statusDiv) statusDiv.textContent = "Mapping rules set.";
+                } catch (e) {
+                    console.error("Error parsing Mapping Rules JSON:", e);
+                    if(statusDiv) statusDiv.textContent = "Error: Invalid Mapping Rules JSON.";
+                    alert("Error in Mapping Rules JSON: " + e.message);
+                }
+            });
+
+            setupQuickTransformDemo(); // Setup demo UI interactions
+
+        } else {
+            console.error("Failed to initialize HypercubeCore or its device, VisualizerController cannot be created.");
+            if(statusDiv) statusDiv.textContent = "Error: Core initialization failed. Controller not created.";
+        }
+
+        // Start audio setup if not auto-started by initialize()
+        // This might be redundant if initialize() always attempts it.
+        if (!audioContext && reactivityIndicator) {
+             reactivityIndicator.textContent = "CLICK FOR MIC ACCESS";
+        }
+    });
+
 
     // Instantiate VisualizerController after mainVisualizerCore is created
     let vizController = null;

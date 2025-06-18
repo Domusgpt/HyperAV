@@ -1,5 +1,12 @@
-/* core/HypercubeCore.js - v1.4 */
+/* core/HypercubeCore.js - v1.4 - WebGPU Finalization */
 import ShaderManager from './ShaderManager.js';
+import GeometryManager from './GeometryManager.js';
+import ProjectionManager from './ProjectionManager.js';
+
+// Store base shader content globally within this module after it's read once.
+// This is a temporary solution. In a real app, shaders would be fetched or managed differently.
+let S_BASE_VERTEX_WGSL = ''; // Will be populated in _initializeWebGPU by passed-in content
+let S_BASE_FRAGMENT_WGSL = ''; // Will be populated in _initializeWebGPU by passed-in content
 
 /*
  * CONCEPTUAL: Offline Rendering / Custom Frame Rate
@@ -181,13 +188,25 @@ const DEFAULT_STATE = {
 };
 
 class HypercubeCore {
-    constructor(canvas, shaderManager, options = {}) {
-        // This constructor will be made async in a moment.
-        // For now, let's prepare for the async initialization.
-        this._asyncInitialization = this._initializeWebGPU(canvas, shaderManager, options);
+    constructor(canvas, shaderManager, options = {}, baseVertexShaderContent = '', baseFragmentShaderContent = '') {
+        this.shaderManager = shaderManager; // Assigned early for _initializeWebGPU
+        this.geometryManager = null;
+        this.projectionManager = null;
+        this.currentPipeline = null;
+        this.bindGroupGlobal = null;
+        this.bindGroupGeometry = null;
+        this.bindGroupProjection = null;
+
+        this.baseVertexWGSL = baseVertexShaderContent;
+        this.baseFragmentWGSL = baseFragmentShaderContent;
+        if (!this.baseVertexWGSL || !this.baseFragmentWGSL) {
+            console.warn("HypercubeCore: Base WGSL shader content not provided during construction! Pipeline creation may fail if not set before rendering.");
+        }
+
+        this._asyncInitialization = this._initializeWebGPU(canvas, options); // shaderManager already set
     }
 
-    async _initializeWebGPU(canvas, shaderManager, options = {}) {
+    async _initializeWebGPU(canvas, options = {}) { // shaderManager is now this.shaderManager
         if (!canvas || !(canvas instanceof HTMLCanvasElement)) throw new Error("Valid HTMLCanvasElement needed.");
         // ShaderManager might be optional or refactored for WebGPU
         // if (shaderManager && !(shaderManager instanceof ShaderManager)) throw new Error("Valid ShaderManager needed.");
@@ -230,10 +249,9 @@ class HypercubeCore {
         });
 
         console.log('WebGPU Initialized');
-        this.shaderManager = shaderManager; // Assign if needed, may change with WebGPU shaders
-
-        // this.quadBuffer = null; // WebGPU uses different buffer concepts
-        // this.aPositionLoc = -1; // WebGPU uses different attribute handling
+        // this.shaderManager is already assigned in constructor
+        this.geometryManager = new GeometryManager();
+        this.projectionManager = new ProjectionManager();
 
         // UBOs will be handled differently in WebGPU (GPUBindGroup, GPUBindGroupLayout)
         // this.globalDataUBO = null;
@@ -348,7 +366,177 @@ class HypercubeCore {
         this._initUniformBuffers(); // Create GPU buffers
         this._initGPUQuadBuffer(); // Create quad vertex buffer
         this._populateInitialUniformData(); // Populate and write initial data
+        this.state.needsShaderUpdate = true; // Trigger initial pipeline setup
     }
+
+    _getWGSLShaderSources() {
+        const geom = this.geometryManager.getGeometry(this.state.geometryType);
+        const proj = this.projectionManager.getProjection(this.state.projectionMethod);
+        let fragmentWGSL;
+
+        const geomUniformsWGSLStruct = geom.getUniformBufferWGSLStruct() || "";
+        const projUniformsWGSLStruct = proj.getUniformBufferWGSLStruct() || "";
+
+        // These are the WGSL code modules for the SDF and projection functions
+        const geomSDFModuleWGSL = geom.getWGSLShaderCode('fragment_module'); // Or 'sdf_function'
+        const projFuncModuleWGSL = proj.getWGSLShaderCode('projection_function');
+
+        let finalVertexWGSL = this.baseVertexWGSL; // Assuming base_vertex.wgsl is usually static
+
+        if (this.state.isFullScreenEffect === 1 || this.state.geometryType === 'fullscreenlattice') {
+            // FullScreenLatticeGeometry provides the entire fragment shader logic
+            // It needs to include its own uniform struct definition and necessary global structs/bindings.
+            // For this path, ShaderManager's getRenderPipeline will use this as the complete fragment shader.
+            // It should define its own main entry point (e.g., main_fullscreen).
+            fragmentWGSL = geomSDFModuleWGSL; // This IS the full shader for fullscreen effects
+            // Potentially, vertex shader might also change for fullscreen effects if they don't use the standard quad.
+            // For now, assume vertex shader remains the same.
+        } else {
+            // Standard SDF rendering path: compose with base_fragment.wgsl
+            fragmentWGSL = this.baseFragmentWGSL;
+
+            // Inject uniform struct definitions
+            fragmentWGSL = fragmentWGSL.replace('// {{INJECTED_GEOMETRY_UNIFORMS_STRUCT}}', geomUniformsWGSLStruct);
+            fragmentWGSL = fragmentWGSL.replace('// {{INJECTED_PROJECTION_UNIFORMS_STRUCT}}', projUniformsWGSLStruct);
+
+            // Inject SDF and projection function modules
+            fragmentWGSL = fragmentWGSL.replace('// {{INJECTED_GEOMETRY_MODULE}}', geomSDFModuleWGSL);
+            fragmentWGSL = fragmentWGSL.replace('// {{INJECTED_PROJECTION_MODULE}}', projFuncModuleWGSL);
+
+            // Replace placeholder function calls in base_fragment.wgsl
+            // This relies on geometry/projection classes returning WGSL code that defines
+            // functions with predictable names based on their class names.
+            // e.g., HypercubeGeometry -> calculateHypercubeSDF
+            //       PerspectiveProjection -> projectPerspective
+            let geomClassName = this.state.geometryType;
+            if (geomClassName === 'fullscreenlattice' && this.state.isFullScreenEffect !== 1) { // SDF mode for fullscreenlattice if possible
+                 geomClassName = 'SDFLattice'; // Placeholder if it had an SDF mode
+            } else if (geomClassName === 'fullscreenlattice') {
+                 geomClassName = 'FullScreenLattice'; // For its main fragment function name
+            }
+
+            const capGeometryType = geomClassName.charAt(0).toUpperCase() + geomClassName.slice(1);
+            const capProjectionMethod = this.state.projectionMethod.charAt(0).toUpperCase() + this.state.projectionMethod.slice(1);
+
+            // These replacements assume the base_fragment.wgsl uses these specific placeholder names.
+            fragmentWGSL = fragmentWGSL.replace(/calculateLattice_placeholder\s*\(/g, `calculate${capGeometryType}SDF(`);
+            fragmentWGSL = fragmentWGSL.replace(/project4Dto3D_placeholder\s*\(/g, `project${capProjectionMethod}(`);
+
+            // If fullscreenlattice is used in SDF mode (isFullScreenEffect=0), it needs an SDF function.
+            // Assuming FullScreenLatticeGeometry's getWGSLShaderCode returns a full shader for isFullScreenEffect=1,
+            // and would need to return an SDF if type='sdf_function'. For now, this path is conceptual for it.
+        }
+
+        return { vertexWGSL: finalVertexWGSL, fragmentWGSL };
+    }
+
+    _updatePipelineAndBindGroupsIfNeeded() {
+        if (!this.state.needsShaderUpdate && this.currentPipeline) {
+            return true; // Pipeline and bind groups are up-to-date
+        }
+        if (!this.shaderManager || !this.device) {
+            console.error("ShaderManager or GPUDevice not available for pipeline update.");
+            return false;
+        }
+
+        console.log("HypercubeCore: Updating pipeline and bind groups for geometry:", this.state.geometryType, "projection:", this.state.projectionMethod, "fullscreen:", this.state.isFullScreenEffect);
+
+        const shaders = this._getWGSLShaderSources();
+        if (!shaders.vertexWGSL || !shaders.fragmentWGSL) {
+            console.error("HypercubeCore: Failed to get WGSL shader sources.");
+            return false;
+        }
+
+        const bglEntriesGroup0 = [
+            { binding: 0, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }, // globalUniforms
+            { binding: 1, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }  // dataChannels
+        ];
+
+        const geom = this.geometryManager.getGeometry(this.state.geometryType);
+        const proj = this.projectionManager.getProjection(this.state.projectionMethod);
+
+        const geomBGLEntries = geom.getUniformGroupLayoutEntries(1); // Group 1 for geometry
+        const projBGLEntries = proj.getUniformGroupLayoutEntries(2); // Group 2 for projection (if distinct from geom)
+
+        const bindGroupLayoutEntriesList = [bglEntriesGroup0];
+        let geometryBindGroupIndex = -1;
+        let projectionBindGroupIndex = -1;
+        let currentDynamicGroupIndex = 1; // Starts after global group 0
+
+        if (geomBGLEntries && geomBGLEntries.length > 0) {
+            bindGroupLayoutEntriesList.push(geomBGLEntries);
+            geometryBindGroupIndex = currentDynamicGroupIndex++;
+        }
+        if (projBGLEntries && projBGLEntries.length > 0) {
+            // Ensure projection gets a new group index if geometry also had one
+            bindGroupLayoutEntriesList.push(projBGLEntries);
+            projectionBindGroupIndex = currentDynamicGroupIndex++;
+        }
+
+        let vertexEntryPoint = 'main';
+        let fragmentEntryPoint = 'main';
+        if (this.state.isFullScreenEffect === 1 || this.state.geometryType === 'fullscreenlattice') {
+            // FullScreenLatticeGeometry provides its own main fragment function
+            // And potentially its own vertex shader if it's not just a fullscreen quad pass
+            // For now, assume vertex entry 'main' is compatible or FullScreenLattice provides simple pass-through vertex.
+            fragmentEntryPoint = geom.getWGSLShaderCode('fragment_entry_point_name') || 'calculateFullScreenLatticeFragment';
+        }
+
+
+        const pipelineName = `${this.state.geometryType}_${this.state.projectionMethod}_${this.state.isFullScreenEffect}_${fragmentEntryPoint}_pipeline`;
+
+        this.currentPipeline = this.shaderManager.getRenderPipeline(
+            pipelineName,
+            shaders.vertexWGSL,
+            shaders.fragmentWGSL,
+            vertexEntryPoint,
+            fragmentEntryPoint,
+            bindGroupLayoutEntriesList
+        );
+
+        if (!this.currentPipeline) {
+            console.error("HypercubeCore: Failed to get or create render pipeline.");
+            return false;
+        }
+
+        try {
+            this.bindGroupGlobal = this.shaderManager.createBindGroup(pipelineName, 0, [
+                { binding: 0, resource: { buffer: this.globalUniformsBuffer } },
+                { binding: 1, resource: { buffer: this.dataChannelsBuffer } }
+            ]);
+
+            this.bindGroupGeometry = null;
+            if (geometryBindGroupIndex !== -1 && this.geometryUniformsBuffer) {
+                this.bindGroupGeometry = this.shaderManager.createBindGroup(pipelineName, geometryBindGroupIndex, [
+                    { binding: 0, resource: { buffer: this.geometryUniformsBuffer } }
+                ]);
+            }
+
+            this.bindGroupProjection = null;
+            if (projectionBindGroupIndex !== -1 && this.projectionUniformsBuffer) {
+                this.bindGroupProjection = this.shaderManager.createBindGroup(pipelineName, projectionBindGroupIndex, [
+                    { binding: 0, resource: { buffer: this.projectionUniformsBuffer } }
+                ]);
+            }
+        } catch (e) {
+            console.error("HypercubeCore: Failed to create bind groups:", e);
+            this.currentPipeline = null; // Invalidate pipeline if bind groups fail
+            return false;
+        }
+
+        if (!this.bindGroupGlobal ||
+            (geometryBindGroupIndex !== -1 && !this.bindGroupGeometry) ||
+            (projectionBindGroupIndex !== -1 && !this.bindGroupProjection)) {
+             console.error("HypercubeCore: Failed to create one or more required bind groups.");
+             this.currentPipeline = null;
+             return false;
+        }
+
+        this.state.needsShaderUpdate = false;
+        console.log("HypercubeCore: Pipeline and bind groups updated successfully for", pipelineName);
+        return true;
+    }
+
 
     /**
      * Renders a single frame to the provided GPUTextureView.
@@ -400,34 +588,26 @@ class HypercubeCore {
             passEncoder.setViewport(0, 0, targetTextureSize.width, targetTextureSize.height, 0, 1);
             passEncoder.setScissorRect(0, 0, targetTextureSize.width, targetTextureSize.height);
 
+            if (!this._updatePipelineAndBindGroupsIfNeeded() || !this.currentPipeline) {
+                console.error("Pipeline or bind groups not ready for _renderToTexture.");
+                passEncoder.end(); // End the pass even if there's nothing to draw
+                this.device.queue.submit([commandEncoder.finish()]);
+                return false;
+            }
 
-            // TODO: Set actual pipeline from ShaderManager
-            // const pipeline = this.shaderManager.getRenderPipeline(
-            //     this.state.shaderProgramName,
-            //     this.state.geometryType,
-            //     this.state.projectionMethod
-            // );
-            // if (pipeline) {
-            //    passEncoder.setPipeline(pipeline);
-            // } else {
-            //    console.error("Render pipeline not available for _renderToTexture!");
-            //    passEncoder.end();
-            //    commandEncoder.finish(); // Finish cleanly even if no pipeline
-            //    return false;
-            // }
-
-            // TODO: Create and set bind groups for uniform buffers
-            // passEncoder.setBindGroup(0, this.globalUniformsBindGroup); // Example
-            // passEncoder.setBindGroup(1, this.dataChannelsBindGroup); // Example
-            // passEncoder.setBindGroup(2, this.geometryUniformsBindGroup); // Example
-            // passEncoder.setBindGroup(3, this.projectionUniformsBindGroup); // Example
-
+            passEncoder.setPipeline(this.currentPipeline);
+            passEncoder.setBindGroup(0, this.bindGroupGlobal);
+            let currentGroupIndex = 1;
+            if (this.bindGroupGeometry) {
+                passEncoder.setBindGroup(currentGroupIndex++, this.bindGroupGeometry);
+            }
+            if (this.bindGroupProjection) {
+                passEncoder.setBindGroup(currentGroupIndex++, this.bindGroupProjection);
+            }
 
             if (this.quadBuffer) {
                 passEncoder.setVertexBuffer(0, this.quadBuffer);
-                // passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
-                // If using triangle strip with 4 vertices: passEncoder.draw(4, 1, 0, 0);
-                // For now, commented out as pipeline is not set.
+                passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
             }
 
             passEncoder.end();
@@ -582,36 +762,106 @@ class HypercubeCore {
     _updateGeometryUniformsData() {
         // This function will populate this.geometryUniformsData based on this.state.geometryType
         // and the corresponding this.state.geom_... values.
-        // Example for 'hypercube':
-        if (this.state.geometryType === 'hypercube') {
-            const gd = this.geometryUniformsData; // Assuming it's correctly sized Float32Array
+        const geom = this.geometryManager.getGeometry(this.state.geometryType);
+        const geomStructDef = geom.getUniformBufferWGSLStruct();
+        if (geomStructDef) {
             const state = this.state;
-            // Map state.geom_hypercube_... to gd array based on HypercubeUniforms WGSL struct
-            // This requires knowing the exact layout of HypercubeUniforms.
-            // For now, let's imagine a simplified mapping:
-            gd[0] = state.geom_hypercube_gridDensity_channel0Factor;
-            gd[1] = state.geom_hypercube_gridDensity_timeFactor;
-            // ... and so on for all fields in HypercubeUniforms, respecting WGSL padding.
-            // This part is highly dependent on the specific WGSL struct for each geometry.
-        } else if (this.state.geometryType === 'hypersphere') {
-            // Populate for hypersphere
-        } // ... etc.
-        this.dirtyGPUBuffers.add('geometryUniforms');
+            const gd = this.geometryUniformsData; // Float32Array (size: 256 bytes / 64 floats)
+            // Clear array before populating to avoid stale data from other geometries
+            gd.fill(0);
+            let offset = 0; // Current float offset
+
+            // IMPORTANT: This is a simplified manual mapping.
+            // A robust solution needs to parse geomStructDef or have predefined layouts.
+            // Offsets assume fields are tightly packed f32 or vecN<f32> without complex padding.
+            // vec3<f32> will take 3 floats. vec2<f32> will take 2 floats.
+            // This does NOT handle std140 padding rules if those were strictly required by a future WGSL version (WebGPU is more relaxed).
+
+            if (this.state.geometryType === 'hypercube') {
+                // Matching HypercubeUniforms struct from GeometryManager
+                gd[offset++] = state.geom_hypercube_gridDensity_channel0Factor;
+                gd[offset++] = state.geom_hypercube_gridDensity_timeFactor;
+                gd[offset++] = state.geom_hypercube_lineThickness_channel1Factor;
+                gd[offset++] = state.geom_hypercube_wCoord_pCoeffs1[0];
+                gd[offset++] = state.geom_hypercube_wCoord_pCoeffs1[1];
+                gd[offset++] = state.geom_hypercube_wCoord_pCoeffs1[2];
+                // offset is now 6
+                gd[offset++] = state.geom_hypercube_wCoord_timeFactor1;
+                gd[offset++] = state.geom_hypercube_wCoord_pLengthFactor;
+                gd[offset++] = state.geom_hypercube_wCoord_timeFactor2;
+                gd[offset++] = state.geom_hypercube_wCoord_channel1Factor;
+                gd[offset++] = state.geom_hypercube_wCoord_coeffs2[0];
+                gd[offset++] = state.geom_hypercube_wCoord_coeffs2[1];
+                gd[offset++] = state.geom_hypercube_wCoord_coeffs2[2];
+                // offset is now 13
+                gd[offset++] = state.geom_hypercube_baseSpeedFactor;
+                gd[offset++] = state.geom_hypercube_rotXW_timeFactor;
+                gd[offset++] = state.geom_hypercube_rotXW_channel2Factor;
+                gd[offset++] = state.geom_hypercube_rotXW_morphFactor;
+                gd[offset++] = state.geom_hypercube_rotYZ_timeFactor;
+                gd[offset++] = state.geom_hypercube_rotYZ_channel1Factor;
+                gd[offset++] = state.geom_hypercube_rotYZ_morphFactor;
+                gd[offset++] = state.geom_hypercube_rotYZ_angleScale;
+                gd[offset++] = state.geom_hypercube_rotZW_timeFactor;
+                gd[offset++] = state.geom_hypercube_rotZW_channel0Factor;
+                gd[offset++] = state.geom_hypercube_rotZW_morphFactor;
+                gd[offset++] = state.geom_hypercube_rotZW_angleScale;
+                gd[offset++] = state.geom_hypercube_rotYW_timeFactor;
+                gd[offset++] = state.geom_hypercube_rotYW_morphFactor;
+                gd[offset++] = state.geom_hypercube_finalLattice_minUniverseMod;
+            } else if (this.state.geometryType === 'fullscreenlattice') {
+                // Matching LatticeUniforms struct from FullScreenLatticeGeometry.js
+                gd[offset++] = state.lattice_edgeLineWidth;
+                gd[offset++] = state.lattice_vertexSize;
+                gd[offset++] = state.lattice_distortP_pZ_factor;
+                gd[offset++] = state.lattice_distortP_morphCoeffs[0];
+                gd[offset++] = state.lattice_distortP_morphCoeffs[1];
+                gd[offset++] = state.lattice_distortP_morphCoeffs[2];
+                gd[offset++] = state.lattice_distortP_timeFactorScale;
+                // ... continue for all latticeUniforms fields
+                gd[offset++] = state.lattice_vignette_inner; // Example, many fields in between
+                gd[offset++] = state.lattice_vignette_outer;
+
+            } else if (this.state.geometryType === 'hypersphere') {
+                 // Example for a few HypersphereUniforms fields
+                gd[offset++] = state.geom_hsphere_density_gridFactor;
+                gd[offset++] = state.geom_hsphere_density_channel0Factor;
+                gd[offset++] = state.geom_hsphere_shellWidth_channel1Factor;
+                // ... continue for all hypersphere uniforms
+            }
+             // Add other geometry types here...
+            this.dirtyGPUBuffers.add('geometryUniforms');
+        }
     }
 
     _updateProjectionUniformsData() {
-        // Similar to _updateGeometryUniformsData, but for projection
-        if (this.state.projectionMethod === 'perspective') {
-            const pd = this.projectionUniformsData;
+        const proj = this.projectionManager.getProjection(this.state.projectionMethod);
+        const projStructDef = proj.getUniformBufferWGSLStruct();
+        if (projStructDef) {
             const state = this.state;
-            // Map state.proj_perspective_... to pd array
-            pd[0] = state.proj_perspective_baseDistance;
-            pd[1] = state.proj_perspective_morphFactorImpact;
-            // ... and so on for PerspectiveUniforms.
-        } // ... etc.
-        this.dirtyGPUBuffers.add('projectionUniforms');
-    }
+            const pd = this.projectionUniformsData; // Float32Array
+            pd.fill(0); // Clear array
+            let offset = 0;
 
+            if (this.state.projectionMethod === 'perspective') {
+                // Matching PerspectiveUniforms struct
+                pd[offset++] = state.proj_perspective_baseDistance;
+                pd[offset++] = state.proj_perspective_morphFactorImpact;
+                pd[offset++] = state.proj_perspective_channelImpact;
+                pd[offset++] = state.proj_perspective_denomMin;
+            } else if (this.state.projectionMethod === 'stereographic') {
+                 // Matching StereographicUniforms struct
+                 pd[offset++] = state.proj_stereo_basePoleW;
+                 pd[offset++] = state.proj_stereo_channelImpact;
+                 pd[offset++] = state.proj_stereo_epsilon;
+                 pd[offset++] = state.proj_stereo_singularityScale;
+                 pd[offset++] = state.proj_stereo_morphFactorImpact;
+            }
+            // Orthographic has no specific uniforms by default, so it won't enter this block if projStructDef is null.
+            // Add other projection types here...
+            this.dirtyGPUBuffers.add('projectionUniforms');
+        }
+    }
 
     // _markAllUniformsDirty() { ... } // To be removed or behavior changed
     // _markUniformDirty(stateKey) { ... } // To be removed
@@ -640,13 +890,17 @@ class HypercubeCore {
                     needsGeomUniformUpdate = true;
                 } else if (key === 'dataChannels') {
                     needsDataChannelsUpdate = true;
-                } else if (key === 'geometryType' || key === 'projectionMethod') {
+                } else if (key === 'geometryType' || key === 'projectionMethod' || key === 'isFullScreenEffect') {
                     if (key === 'geometryType') needsGeomUniformUpdate = true;
                     if (key === 'projectionMethod') needsProjUniformUpdate = true;
-                    this.state.needsShaderUpdate = true; // Pipeline might need to change
-                } else if (Object.keys(DEFAULT_STATE).includes(key) && key !== 'callbacks' && key !== 'shaderProgramName' && key !== 'needsShaderUpdate' && key !== 'isRendering' && key !== 'animationFrameId' && key !== 'startTime' && key !== 'lastUpdateTime' && key !== 'deltaTime') {
-                    // This is a general global uniform if not caught by specific prefixes
-                    needsGlobalUniformUpdate = true;
+                    // isFullScreenEffect change also requires pipeline update as it changes fragment shader logic path or entry point.
+                    this.state.needsShaderUpdate = true;
+                } else if (Object.keys(DEFAULT_STATE).includes(key) &&
+                           key !== 'callbacks' && key !== 'shaderProgramName' &&
+                           key !== 'needsShaderUpdate' && key !== 'isRendering' &&
+                           key !== 'animationFrameId' && key !== 'startTime' &&
+                           key !== 'lastUpdateTime' && key !== 'deltaTime') {
+                    needsGlobalUniformUpdate = true; // This is a general global uniform if not caught by specific prefixes
                 }
             }
         }
@@ -738,31 +992,29 @@ class HypercubeCore {
                 colorAttachments: [colorAttachment],
             });
 
-            // TODO: Set actual pipeline from ShaderManager
-            // const pipeline = this.shaderManager.getRenderPipeline(
-            //     this.state.shaderProgramName,
-            //     this.state.geometryType,
-            //     this.state.projectionMethod
-            // );
-            // if (pipeline) {
-            //    passEncoder.setPipeline(pipeline);
-            // } else {
-            //    console.error("Render pipeline not available!");
-            //    // Potentially stop rendering or use a fallback
-            // }
+            if (!this._updatePipelineAndBindGroupsIfNeeded() || !this.currentPipeline) {
+                console.error("Pipeline or bind groups not ready for _drawFrameLogic.");
+                // No passEncoder created yet if pipeline update failed before passEncoder.beginRenderPass
+                // If beginRenderPass was called, it needs to be ended.
+                // For simplicity, assuming if pipeline update fails, we don't start the render pass.
+                return false;
+            }
 
-            // TODO: Create and set bind groups for uniform buffers
-            // passEncoder.setBindGroup(0, this.globalUniformsBindGroup); // Example
-            // passEncoder.setBindGroup(1, this.dataChannelsBindGroup); // Example
-            // passEncoder.setBindGroup(2, this.geometryUniformsBindGroup); // Example
-            // passEncoder.setBindGroup(3, this.projectionUniformsBindGroup); // Example
+            passEncoder.setPipeline(this.currentPipeline);
+            passEncoder.setBindGroup(0, this.bindGroupGlobal);
+
+            let currentGroupIdx = 1;
+            if (this.bindGroupGeometry) {
+                 passEncoder.setBindGroup(currentGroupIdx++, this.bindGroupGeometry);
+            }
+            if (this.bindGroupProjection) {
+                 passEncoder.setBindGroup(currentGroupIdx++, this.bindGroupProjection);
+            }
 
 
             if (this.quadBuffer) {
                 passEncoder.setVertexBuffer(0, this.quadBuffer);
-                // passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
-                // If using triangle strip with 4 vertices: passEncoder.draw(4, 1, 0, 0);
-                // For now, commented out as pipeline is not set.
+                passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
             }
 
             passEncoder.end();
