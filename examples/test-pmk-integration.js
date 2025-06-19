@@ -1,11 +1,12 @@
 // Ensure all paths are correct relative to 'examples/' directory
-import { VisualizerController } from '../controllers/VisualizerController.js';
+import { VisualizerController } from '../controllers/VisualizerController.js'; // Though using Dummy for this test
 import { PMKDataAdapter } from '../controllers/PMKDataAdapter.js';
 import { KerbelizedParserator } from '../pmk-integration/parsers/KerbelizedParserator.js';
-import { PPPProjector } from '../pmk-integration/parsers/PPPProjector.js';
-import { TimestampedThoughtBuffer } from '../pmk-integration/optimizers/TimestampedThoughtBuffer.js';
+import { PPPProjector } from '../pmk-integration/parsers/PPPProjector.js'; // Not directly used here but good for context
+import { TimestampedThoughtBuffer } from '../pmk-integration/optimizers/TimestampedThoughtBuffer.js'; // Same as above
+import { HOASBridge } from '../controllers/HOASBridge.js'; // New import
 
-console.log("test-pmk-integration.js: Script loaded. Attempting to run full PMK component integration test with detailed configurations.");
+console.log("test-pmk-integration.js: Loaded. Testing with HOASBridge.");
 
 class DummyVisualizerController {
     constructor() { console.log("DummyVisualizerController instantiated for PMK test."); }
@@ -17,150 +18,134 @@ class DummyVisualizerController {
 async function mainPMKTest() {
     console.log("test-pmk-integration.js: mainPMKTest() started.");
 
-    let vizController = new DummyVisualizerController();
-    const pmkAdapter = new PMKDataAdapter(vizController); // vizController is now always the dummy
+    const vizController = new DummyVisualizerController();
+    const pmkAdapter = new PMKDataAdapter(vizController); // Still useful for adapting final output
 
-    // Configuration Set 1 (Debug logging, PPP enabled, specific sub-configs)
-    const configSet1 = {
-        operationalMode: "exploratory_analysis",
-        defaultParsingDepth: 3,
-        enablePPPinjection: true,
-        loggingVerbosity: "debug",
-        schemaGraphConfig: {
-            adaptationStrategy: "aggressive_learning",
-            maxSchemaComplexity: 15,
-            initialSchemaDefinition: { type: 'custom_from_config1', details: 'schema_1_details' }
-        },
-        focusOptimizerConfig: {
-            optimizationGoal: "maximize_accuracy",
-            parameterBounds: { temperature: [0.1, 0.6], abstractionWeight: [0.4, 0.9] },
-            defaultTemperature: 0.35,
-            explorationFactor: 0.2
-        },
-        thoughtBufferConfig: {
-            maxSize: 50,
-            retentionPolicy: "lifo",
-            defaultInjectionWeight: 0.75
-        },
-        pppProjectorConfig: {
-            defaultProjectionType: "event_type_from_config1",
-            projectionSource: "kp_internal_ppp_config1"
-        }
-    };
-
-    // Configuration Set 2 (Info logging, PPP disabled, different sub-configs)
-    const configSet2 = {
-        operationalMode: "high_throughput_extraction",
-        defaultParsingDepth: 7,
-        enablePPPinjection: false, // PPP Disabled
+    // Initial config for KerbelizedParserator
+    const initialKpConfig = {
+        operationalMode: "standard_parsing",
         loggingVerbosity: "info",
-        schemaGraphConfig: {
-            adaptationStrategy: "conservative",
-            maxSchemaComplexity: 8,
-        },
-        focusOptimizerConfig: {
-            optimizationGoal: "minimize_latency",
-            defaultTemperature: 0.8, // Test if KP picks this up
-        },
-        thoughtBufferConfig: {
-            maxSize: 10,
-            retentionPolicy: "fifo",
-            defaultInjectionWeight: 0.4
-        },
-        pppProjectorConfig: {
-            defaultProjectionType: "event_type_from_config2",
-            projectionSource: "kp_internal_ppp_config2"
-        }
+        enablePPPinjection: true,
+        schemaGraphConfig: { initialSchemaDefinition: { type: 'initial_default', complexity: 1 } },
+        focusOptimizerConfig: { defaultTemperature: 0.7, optimizationGoal: "balance_accuracy_cost" },
+        thoughtBufferConfig: { maxSize: 100, retentionPolicy: "fifo" },
+        pppProjectorConfig: { defaultProjectionType: "initial_event", projectionSource: "kp_internal_initial" }
     };
 
-    console.log("\n--- Initializing KerbelizedParserator with Config Set 1 ---");
-    const parserator1 = new KerbelizedParserator(configSet1);
+    console.log("\n--- Initializing KerbelizedParserator directly ---");
+    const parserator = new KerbelizedParserator(initialKpConfig);
 
-    // Test with separate PPPProjector and ThoughtBuffer instances as well
-    const externalThoughtBuffer = new TimestampedThoughtBuffer({maxSize: 30, defaultInjectionWeight: 0.1, retentionPolicy: "lifo"});
-    const externalPPPProjector = new PPPProjector({timestampSpreadFactor: 50, baseFocusWeight: 0.2, defaultProjectionType: "external_event"});
+    console.log("\n--- Initializing HOASBridge with Parserator instance ---");
+    const hoasBridge = new HOASBridge(parserator);
 
-    async function testParseAndAdaptationCycle(id, parseratorInstance, testData, context) {
-        console.log(`\nStarting Test Cycle ${id} with data:`, testData, "and context:", context);
-
-        const internalThoughtBufferStateBefore = parseratorInstance.thoughtBuffer.getCurrentState ? parseratorInstance.thoughtBuffer.getCurrentState() : [];
-        console.log(`Thought Buffer (parserator's internal for ${id}) initial state size:`, internalThoughtBufferStateBefore.length);
-
-        console.log(`--- Calling KerbelizedParserator (${id}).parseWithContext ---`);
-        const result = await parseratorInstance.parseWithContext(testData, context);
-        console.log(`KerbelizedParserator (${id}).parseWithContext full result:`, JSON.stringify(result, null, 2));
-
-        const internalThoughtBufferStateAfter = parseratorInstance.thoughtBuffer.getCurrentState ? parseratorInstance.thoughtBuffer.getCurrentState() : [];
-        console.log(`Thought Buffer (parserator's internal for ${id}) state after parse size:`, internalThoughtBufferStateAfter.length);
-        if (parseratorInstance.config.enablePPPinjection && internalThoughtBufferStateAfter.length > internalThoughtBufferStateBefore.length) {
-            console.log(`  Verified: PPP injection occurred for ${id} as enablePPPinjection is true.`);
-        } else if (!parseratorInstance.config.enablePPPinjection && internalThoughtBufferStateAfter.length === internalThoughtBufferStateBefore.length) {
-             // If PPP is disabled, or if it was enabled but no injection points were found (e.g. pppProjection was empty)
-            if (!parseratorInstance.config.enablePPPinjection) {
-                 console.log(`  Verified: PPP injection was skipped for ${id} as enablePPPinjection is false.`);
-            } else {
-                 console.log(`  Note: PPP injection enabled for ${id}, but buffer size did not change. This might be expected if no projection data was suitable for injection.`);
-            }
-        } else if (parseratorInstance.config.enablePPPinjection && internalThoughtBufferStateAfter.length === internalThoughtBufferStateBefore.length) {
-             console.log(`  Note: PPP injection enabled for ${id}, but buffer size did not change. This might be expected if no projection data was suitable for injection, or if buffer was full and used LIFO.`);
-        }
-
-
-        // Example of using the separate PPPProjector with its own buffer
-        const abstractionsToProject = result.data.extractedItems || [{id: `item_for_ext_ppp_${id}`, content: `abstract data from ${id}`}];
-        console.log(`--- Calling external PPPProjector.projectToTimestampedBuffer (for cycle ${id}) ---`);
-        const pppFileProjections = externalPPPProjector.projectToTimestampedBuffer(abstractionsToProject, externalThoughtBuffer);
-        console.log(`External PPPProjector produced projections (${id}):`, JSON.stringify(pppFileProjections, null, 2));
-        console.log(`External Thought Buffer state after PPPProjector call in cycle ${id}: Size`, externalThoughtBuffer.getCurrentState().length);
-
-        console.log(`--- Calling PMKDataAdapter.processPMKUpdate (for cycle ${id}) ---`);
-        const snapshotForAdapter = {
-            architect: {
-                confidence: result.confidence,
-                planComplexity: result.metadata.focusParams.temperature,
-                activeNodes: result.iterations,
-                schemaType: result.metadata.contextUsed ? result.metadata.contextUsed.schema : "unknown_schema",
-                schemaVersion: result.schemaVersion
-            },
-            focus: result.metadata.focusParams,
-            pppSnapshot: result.metadata.pppProjectionDetails,
-            rawData: result.data
-        };
-        pmkAdapter.processPMKUpdate(snapshotForAdapter);
-        console.log(`PMKDataAdapter processing complete for cycle ${id}.`);
+    console.log("\n--- 1. Getting Initial Parser Status via HOASBridge ---");
+    let status = await hoasBridge.getParserStatus();
+    console.log("Initial Parser Status from Bridge:", JSON.stringify(status, null, 2));
+    if (status.parseratorConfiguration.operationalMode === "standard_parsing") {
+        console.log("  VERIFIED: Bridge reports correct initial operationalMode.");
     }
 
-    // --- Test Case 1 (using parserator1 with configSet1) ---
-    const testData1 = { text: "Process this example sentence for contact info with config1." };
-    const context1 = {
-        schema: "contact_extraction_config1",
-        confidenceThreshold: 0.7,
-        currentPerformanceMetrics: { accuracy: 0.9, speed: 100 }
+    console.log("\n--- 2. Setting Operational Mode via HOASBridge ---");
+    await hoasBridge.setOperationalMode("exploratory_analysis");
+    status = await hoasBridge.getParserStatus();
+    console.log("Parser Status after setOperationalMode. New Mode:", JSON.stringify(status.parseratorConfiguration.operationalMode, null, 2));
+    if (parserator.config.operationalMode === "exploratory_analysis") {
+        console.log("  VERIFIED: KerbelizedParserator operationalMode directly updated to 'exploratory_analysis'.");
+    } else {
+        console.error("  FAILED: KerbelizedParserator operationalMode not updated as expected.");
+    }
+
+    console.log("\n--- 3. Tuning Focus Parameters via HOASBridge ---");
+    const newFocusParams = { optimizationGoal: "maximize_accuracy", defaultTemperature: 0.22 };
+    await hoasBridge.tuneFocusParameters(newFocusParams);
+    status = await hoasBridge.getParserStatus();
+    console.log("Parser Status after tuneFocusParameters (focusOptimizerConfig):", JSON.stringify(status.parseratorConfiguration.focusOptimizerConfig, null, 2));
+     if (parserator.config.focusOptimizerConfig.defaultTemperature === 0.22 &&
+         parserator.config.focusOptimizerConfig.optimizationGoal === "maximize_accuracy") {
+        console.log("  VERIFIED: KerbelizedParserator focusOptimizerConfig updated via bridge.");
+    } else {
+        console.error("  FAILED: KerbelizedParserator focusOptimizerConfig not updated as expected.");
+    }
+
+    console.log("\n--- 4. Processing Data via HOASBridge (first run) ---");
+    const testData1 = { text: "Sample data for first run via HOASBridge." };
+    const context1 = { schema: "text_analysis_v1", confidenceThreshold: 0.6, targetTemperature: 0.22 }; // Pass targetTemp
+    let result1 = await hoasBridge.processData(testData1, context1);
+    console.log("Result from processData (run 1):", JSON.stringify(result1, null, 2));
+     if (result1 && result1.metadata.focusParams.temperature === 0.22) {
+        console.log("  VERIFIED: parseWithContext used temperature set by tuneFocusParameters (via context).");
+    }
+
+
+    console.log("\n--- 5. Setting Full New Configuration via HOASBridge ---");
+    const fullNewConfig = {
+        operationalMode: "high_throughput_extraction",
+        loggingVerbosity: "debug", // Change logging
+        enablePPPinjection: false,  // Disable PPP
+        defaultParsingDepth: 10,
+        schemaGraphConfig: { adaptationStrategy: "conservative", maxSchemaComplexity: 5, initialSchemaDefinition: {type: 'new_schema_for_reconfig'} },
+        focusOptimizerConfig: { optimizationGoal: "minimize_latency", defaultTemperature: 0.85, parameterBounds: { temperature: [0.5,0.9]} },
+        thoughtBufferConfig: { maxSize: 10, retentionPolicy: "fifo" },
+        pppProjectorConfig: {} // Effectively disable internal PPP by empty config (or make it more explicit if KP logic changes)
     };
-    await testParseAndAdaptationCycle("KP1_Run1", parserator1, testData1, context1);
+    await hoasBridge.setParserConfiguration(fullNewConfig);
+    status = await hoasBridge.getParserStatus();
+    console.log("Parser Status after setParserConfiguration. Mode:", status.parseratorConfiguration.operationalMode, "PPP Enabled:", status.parseratorConfiguration.enablePPPinjection, "Logging:", status.parseratorConfiguration.loggingVerbosity);
+    if (parserator.config.loggingVerbosity === "debug" &&
+        !parserator.config.enablePPPinjection &&
+        parserator.config.operationalMode === "high_throughput_extraction" &&
+        parserator.schemaGraph.config.maxSchemaComplexity === 5 && // Check sub-component re-init
+        parserator.pppProjector === undefined // Check if PPPProjector was undefined
+        ) {
+        console.log("  VERIFIED: KerbelizedParserator reconfigured with new full settings, including sub-components and PPPProjector removal.");
+    } else {
+        console.error("  FAILED: KerbelizedParserator full reconfiguration not verified. Current KP logging: ", parserator.config.loggingVerbosity, "PPP enabled:", parserator.config.enablePPPinjection, "KP SchemaGraph MaxComplexity:", parserator.schemaGraph.config.maxSchemaComplexity, "KP PPPProjector:", parserator.pppProjector);
+    }
 
-    // --- Test Case 2 (still using parserator1, but different data) ---
-    const testData2 = { image_features: [0.1, 0.5, 0.9], source: "visual_sensor_A_config1" };
-    const context2 = {
-        schema: "image_analysis_config1",
-        confidenceThreshold: 0.6,
-        currentPerformanceMetrics: { accuracy: 0.85, speed: 50 }
-    };
-    await testParseAndAdaptationCycle("KP1_Run2", parserator1, testData2, context2);
 
-    console.log("\n--- Initializing KerbelizedParserator with Config Set 2 (PPP disabled, info logging) ---");
-    const parserator2 = new KerbelizedParserator(configSet2);
+    console.log("\n--- 6. Processing Data via HOASBridge (second run, after full reconfig) ---");
+    const testData2 = { text: "More data for second run, expecting different behavior (debug logs, no PPP)." };
+    const context2 = { schema: "text_analysis_v2", confidenceThreshold: 0.9 };
+    let result2 = await hoasBridge.processData(testData2, context2);
+    console.log("Result from processData (run 2):", JSON.stringify(result2, null, 2));
+    // Observe KP logs for "PPP Injection disabled" and "debug" level messages.
+    if (result2 && result2.metadata.pppProjectionDetails.detail === "no_ppp_fallback") {
+        console.log("  VERIFIED: PPP was indeed disabled for run 2 as per logs/result.");
+    }
 
-    // --- Test Case 3 (using parserator2 with configSet2) ---
-    const testData3 = { text: "Another sentence for high throughput test with config2." };
-    const context3 = {
-        schema: "text_extraction_config2",
-        confidenceThreshold: 0.8,
-        currentPerformanceMetrics: { accuracy: 0.95, speed: 200 }
-    };
-    await testParseAndAdaptationCycle("KP2_Run1", parserator2, testData3, context3);
+    console.log("\n--- 7. Testing Schema Representation (mock) ---");
+    const schemaRep = await hoasBridge.getCurrentSchemaRepresentation();
+    console.log("Schema Representation from Bridge:", JSON.stringify(schemaRep, null, 2));
+    if (schemaRep.schemaId === 'new_schema_for_reconfig') { // Check if schema re-init happened
+        console.log("  VERIFIED: Schema representation reflects schema from fullNewConfig.");
+    }
 
-    console.log("\nmainPMKTest() finished successfully. Review logs for config effects.");
+
+    // Example of how PMKDataAdapter might be used with HOASBridge results
+    function adaptResultToSnapshot(parserResult) {
+        if (!parserResult || !parserResult.metadata) {
+            console.warn("adaptResultToSnapshot: Invalid parser result provided:", parserResult);
+            return { error: "Invalid parser result" };
+        }
+        return {
+            architect: {
+                confidence: parserResult.confidence,
+                planComplexity: parserResult.metadata.focusParams ? parserResult.metadata.focusParams.temperature : null,
+                activeNodes: parserResult.iterations,
+                schemaType: parserResult.metadata.contextUsed ? parserResult.metadata.contextUsed.schema : "unknown_schema",
+                schemaVersion: parserResult.schemaVersion
+            },
+            focus: parserResult.metadata.focusParams,
+            pppSnapshot: parserResult.metadata.pppProjectionDetails,
+            rawData: parserResult.data
+        };
+    }
+    console.log("\n--- (Optional) Using PMKDataAdapter with final result ---");
+    const finalSnapshot = adaptResultToSnapshot(result2);
+    pmkAdapter.processPMKUpdate(finalSnapshot);
+
+
+    console.log("\nmainPMKTest() finished successfully. Review logs for HOASBridge actions and KP reconfigurations.");
 }
 
 mainPMKTest().catch(err => {

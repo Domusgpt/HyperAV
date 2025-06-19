@@ -18,35 +18,83 @@ const LOG_LEVELS = { "debug": 1, "info": 2, "warn": 3, "error": 4, "none": 5 };
 
 export class KerbelizedParserator {
   constructor(config = {}) {
-    // Deep merge for nested configs might be more robust with a utility
-    this.config = {
+    this._initializeConfig(config);
+    this._initializeComponents();
+    this._log("info", `KerbelizedParserator initialized. Mode: ${this.config.operationalMode}, Logging: ${this.config.loggingVerbosity}`);
+  }
+
+  _initializeConfig(newConfig = {}) {
+    // Helper to set or update config, used by constructor and reconfigure
+    const baseConfig = this.config || DEFAULT_KP_CONFIG; // Use current config if exists, else default
+
+    // Start with a fresh default base to ensure all default fields are present
+    // then layer existing config (if any, from this.config), then layer newConfig.
+    const mergedConfig = {
         ...DEFAULT_KP_CONFIG,
-        ...config,
-        schemaGraphConfig: { ...DEFAULT_KP_CONFIG.schemaGraphConfig, ...(config.schemaGraphConfig || {}) },
-        focusOptimizerConfig: { ...DEFAULT_KP_CONFIG.focusOptimizerConfig, ...(config.focusOptimizerConfig || {}) },
-        thoughtBufferConfig: { ...DEFAULT_KP_CONFIG.thoughtBufferConfig, ...(config.thoughtBufferConfig || {}) },
-        pppProjectorConfig: { ...DEFAULT_KP_CONFIG.pppProjectorConfig, ...(config.pppProjectorConfig || {}) }
+        ...(this.config || {}), // Apply current config over defaults
+        ...newConfig,          // Apply new config over current/defaults
     };
 
-    this.logLevel = LOG_LEVELS[this.config.loggingVerbosity.toLowerCase()] || LOG_LEVELS["info"];
+    // Deep merge for nested config objects
+    mergedConfig.schemaGraphConfig = {
+        ...(DEFAULT_KP_CONFIG.schemaGraphConfig),
+        ...((this.config || {}).schemaGraphConfig || {}),
+        ...(newConfig.schemaGraphConfig || {})
+    };
+    mergedConfig.focusOptimizerConfig = {
+        ...(DEFAULT_KP_CONFIG.focusOptimizerConfig),
+        ...((this.config || {}).focusOptimizerConfig || {}),
+        ...(newConfig.focusOptimizerConfig || {})
+    };
+    mergedConfig.thoughtBufferConfig = {
+        ...(DEFAULT_KP_CONFIG.thoughtBufferConfig),
+        ...((this.config || {}).thoughtBufferConfig || {}),
+        ...(newConfig.thoughtBufferConfig || {})
+    };
+    mergedConfig.pppProjectorConfig = {
+        ...(DEFAULT_KP_CONFIG.pppProjectorConfig),
+        ...((this.config || {}).pppProjectorConfig || {}),
+        ...(newConfig.pppProjectorConfig || {})
+    };
 
+    this.config = mergedConfig;
+    this.logLevel = LOG_LEVELS[this.config.loggingVerbosity.toLowerCase()] || LOG_LEVELS["info"];
+  }
+
+  _initializeComponents() {
+    // Helper to (re)initialize components based on current this.config
     this.schemaGraph = new AdaptiveSchemaGraph(this.config.schemaGraphConfig);
     this.focusOptimizer = new BayesianFocusOptimizer(this.config.focusOptimizerConfig);
     this.thoughtBuffer = new TimestampedThoughtBuffer(this.config.thoughtBufferConfig);
 
-    if (this.config.pppProjectorConfig && Object.keys(this.config.pppProjectorConfig).length > 0) { // Instantiate if config is not empty
+    // Only instantiate PPPProjector if pppProjectorConfig is not empty or has meaningful keys
+    // Check if pppProjectorConfig is explicitly provided and has content.
+    // An empty object {} might be passed by default merge, so check its keys.
+    if (this.config.pppProjectorConfig && Object.keys(this.config.pppProjectorConfig).length > 0 &&
+        (Object.keys(this.config.pppProjectorConfig).some(k => this.config.pppProjectorConfig[k] !== undefined && this.config.pppProjectorConfig[k] !== DEFAULT_KP_CONFIG.pppProjectorConfig[k])) // Check if it's more than just empty defaults
+    ) {
         this.pppProjector = new PPPProjector(this.config.pppProjectorConfig);
-        this._log("info", "KerbelizedParserator: Internal PPPProjector instantiated.");
+        this._log("debug", "Internal PPPProjector (re)instantiated with config:", this.config.pppProjectorConfig);
     } else {
-        this._log("info", "KerbelizedParserator: Internal PPPProjector not configured or config is empty.");
+        this.pppProjector = undefined;
+        this._log("debug", "Internal PPPProjector is undefined (no specific config or empty config).");
     }
+  }
 
-    this._log("info", `KerbelizedParserator initialized. Mode: ${this.config.operationalMode}, Logging: ${this.config.loggingVerbosity}`);
+  async reconfigure(newConfig = {}) {
+    this._log("info", "Reconfiguring KerbelizedParserator with new config:", JSON.stringify(newConfig,null,2));
+    this._initializeConfig(newConfig); // Apply new config merged with existing
+    this._initializeComponents();      // Re-initialize components with the new config
+    this._log("info", `KerbelizedParserator reconfigured. New mode: ${this.config.operationalMode}, New logging: ${this.config.loggingVerbosity}`);
+    this._log("debug", "Full new config post-reconfigure:", JSON.stringify(this.config,null,2));
+    return true;
   }
 
   _log(level, ...args) {
     if (LOG_LEVELS[level] >= this.logLevel) {
-      console.log(`[KP][${level.toUpperCase()}]`, ...args);
+      // Adding a check for JSON.stringify for objects to avoid "[object Object]"
+      const processedArgs = args.map(arg => (typeof arg === 'object' && arg !== null) ? JSON.stringify(arg, null, 2) : arg);
+      console.log(`[KP][${level.toUpperCase()}]`, ...processedArgs);
     }
   }
 
@@ -78,9 +126,8 @@ export class KerbelizedParserator {
       temperature: this.getCurrentTemperature(context),
       abstractionWeight: this.getAbstractionWeights(context),
       contextualRelevance: pppProjection.relevanceScore,
-      currentPerformance: context.currentPerformanceMetrics, // Might be undefined, optimizer should handle
+      currentPerformance: context.currentPerformanceMetrics,
       computationalCost: input ? JSON.stringify(input).length : 0,
-      // Pass optimizer specific config if available from main config
       ...(this.config.focusOptimizerConfig.defaultParams || {})
     };
     this._log("debug", "Optimizing focus with params:", focusParamsInput);
@@ -93,12 +140,10 @@ export class KerbelizedParserator {
   async projectToPPP(context) {
     if (this.pppProjector) {
       this._log("debug", "Using internal PPPProjector for projectToPPP.");
-      // This assumes PPPProjector can project a 'context' object.
-      // Let's adapt to its existing `createProbabilisticProjection` for a single item.
       const itemToProject = { type: "full_context", data: context };
       const projectionResult = this.pppProjector.createProbabilisticProjection(itemToProject);
       return {
-          relevanceScore: projectionResult.confidence || 0.5, // PPPProjector uses 'confidence'
+          relevanceScore: projectionResult.confidence || 0.5,
           projectedData: projectionResult.projectedValue,
           detail: `Projection from internal PPPProjector (type: ${projectionResult.projectionType})`
       };
@@ -127,13 +172,13 @@ export class KerbelizedParserator {
   getCurrentTemperature(context = {}) {
     let temp = context.targetTemperature;
     if (temp === undefined && this.config.focusOptimizerConfig) {
-      temp = this.config.focusOptimizerConfig.defaultTemperature; // Check for a direct default
+      temp = this.config.focusOptimizerConfig.defaultTemperature;
       if (temp === undefined && this.config.focusOptimizerConfig.parameterBounds && this.config.focusOptimizerConfig.parameterBounds.temperature) {
         const bounds = this.config.focusOptimizerConfig.parameterBounds.temperature;
-        temp = (bounds[0] + bounds[1]) / 2; // Midpoint of bounds
+        temp = (bounds[0] + bounds[1]) / 2;
       }
     }
-    temp = temp !== undefined ? temp : 0.75; // Fallback if no config found
+    temp = temp !== undefined ? temp : 0.75;
     this._log("debug", `getCurrentTemperature returning: ${temp}`);
     return temp;
   }
@@ -141,13 +186,13 @@ export class KerbelizedParserator {
   getAbstractionWeights(context = {}) {
     let weight = context.targetAbstractionWeight;
     if (weight === undefined && this.config.focusOptimizerConfig) {
-      weight = this.config.focusOptimizerConfig.defaultAbstractionWeight; // Check for a direct default
+      weight = this.config.focusOptimizerConfig.defaultAbstractionWeight;
       if (weight === undefined && this.config.focusOptimizerConfig.parameterBounds && this.config.focusOptimizerConfig.parameterBounds.abstractionWeight) {
         const bounds = this.config.focusOptimizerConfig.parameterBounds.abstractionWeight;
-        weight = (bounds[0] + bounds[1]) / 2; // Midpoint of bounds
+        weight = (bounds[0] + bounds[1]) / 2;
       }
     }
-    weight = weight !== undefined ? weight : 0.55; // Fallback if no config found
+    weight = weight !== undefined ? weight : 0.55;
     this._log("debug", `getAbstractionWeights returning: ${weight}`);
     return weight;
   }
@@ -170,14 +215,16 @@ export class KerbelizedParserator {
     const adaptedSchema = await this.schemaGraph.adaptSchema(currentSchema, {
         input: input,
         parsingOutput: simulatedParsingOutput,
-        focusParams: focusParams
+        focusParams: focusParams,
+        // Pass confidence directly for adaptSchema to use
+        confidence: simulatedParsingOutput.quality * (focusParams.temperature || 0.7)
     });
     this._log("debug", "Schema after adaptation attempt. New type (if changed):", adaptedSchema ? adaptedSchema.type : "N/A");
 
     return {
       data: simulatedParsingOutput.parsedContent,
       confidence: simulatedParsingOutput.quality * (focusParams.temperature || 0.7),
-      iterations: maxIter, // Reporting the "max" iterations for now
+      iterations: maxIter,
       schemaVersion: adaptedSchema.version || (currentSchema ? currentSchema.version : '1.0') || '1.0',
       metadata: {
         focusParams,
