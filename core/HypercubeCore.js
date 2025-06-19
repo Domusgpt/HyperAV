@@ -276,6 +276,7 @@ class HypercubeCore {
         // Initialize state with defaults, then override with options
         this.state = { ...DEFAULT_STATE }; // Initialize state early for callbacks
         this.state.dataChannels = initialDataChannels; // Explicitly set the 64-float array here
+        this._lastLogTime = 0; // Initialize for timed logging in render loop
 
         // Carefully merge options to ensure type consistency for nested objects like colorScheme
         // and to handle specific option mappings like projectionViewDistance.
@@ -704,6 +705,28 @@ class HypercubeCore {
         this._checkResize(); // Handle canvas resize, may update globalUniformsData.resolution
 
         this._updateDirtyUniformBuffers(); // Write all changed uniform data to GPU
+
+        // Conceptual logging for data flow verification
+        if (this.state.time > (this._lastLogTime || 0) + 0.5) { // Log approx every 0.5 seconds
+            console.log(`HypercubeCore Render State @ ${this.state.time.toFixed(2)}s:`);
+            console.log(`  Geometry: ${this.state.geometryType}, Projection: ${this.state.projectionMethod}`);
+            console.log(`  Morph: ${this.state.morphFactor.toFixed(3)}, Glitch: ${this.state.glitchIntensity.toFixed(3)}`);
+            if (this.state.colorScheme && this.state.colorScheme.primary) {
+                 console.log(`  ColorPrimary: [${this.state.colorScheme.primary.map(c => c.toFixed(2)).join(', ')}]`);
+            } else {
+                 console.log(`  ColorPrimary: (not fully defined)`);
+            }
+            // Log a few representative data channels
+            if (this.state.dataChannels && this.state.dataChannels.length >= 20) {
+                const dcSlice = this.state.dataChannels.slice(0, 4).map(c => typeof c === 'number' ? c.toFixed(3) : String(c)).join(', ');
+                const dcSlice2 = this.state.dataChannels.slice(16, 20).map(c => typeof c === 'number' ? c.toFixed(3) : String(c)).join(', ');
+                console.log(`  DataChannels (0-3): [${dcSlice}]`);
+                console.log(`  DataChannels (16-19): [${dcSlice2}]`);
+            } else {
+                console.log(`  DataChannels: (not fully available or too short)`);
+            }
+            this._lastLogTime = this.state.time;
+        }
 
         // Shader and pipeline updates will be handled differently (later subtask)
         // if (this.state.needsShaderUpdate) {

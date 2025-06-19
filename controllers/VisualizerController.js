@@ -1,354 +1,230 @@
-// js/VisualizerController.js
+// controllers/VisualizerController.js
+
+// Default transformations - can be extended
+const defaultTransformations = {
+    normalize: (value, min = 0, max = 1) => (value - min) / (max - min),
+    logScale: (value) => (value > 0 ? Math.log(value) : 0),
+    // Add more transformations here as needed
+};
 
 export class VisualizerController {
     constructor(hypercubeCoreInstance, config = {}) {
         if (!hypercubeCoreInstance) {
-            throw new Error("VisualizerController requires a HypercubeCore instance.");
+            throw new Error("HypercubeCore instance is required for VisualizerController.");
         }
         this.core = hypercubeCoreInstance;
-        // Process baseParameters first if they exist
-        if (config.baseParameters && typeof config.baseParameters === 'object') {
-            this.core.updateParameters(config.baseParameters);
-            console.log("VisualizerController: Applied baseParameters.", config.baseParameters);
+        this.config = config;
+        this.transformations = { ...defaultTransformations, ...(config.customTransformations || {}) };
+
+        // Initialize mappingRules
+        this.mappingRules = { ubo: [], direct: {} }; // Default empty structure
+
+        if (config.mappingRules && typeof config.mappingRules === 'object') {
+            // Deep copy provided mapping rules
+            if (config.mappingRules.ubo && Array.isArray(config.mappingRules.ubo)) {
+                this.mappingRules.ubo = JSON.parse(JSON.stringify(config.mappingRules.ubo));
+            }
+            if (config.mappingRules.direct && typeof config.mappingRules.direct === 'object') {
+                this.mappingRules.direct = JSON.parse(JSON.stringify(config.mappingRules.direct));
+            }
+            console.log("VisualizerController: Initialized with mappingRules provided directly in config.");
+        } else if (config.dataChannelDefinition) { // Legacy or alternative way to define initial mappings
+            this._generateInitialMappingRules(config.dataChannelDefinition);
+            console.log("VisualizerController: Initialized mappingRules from dataChannelDefinition.");
+        } else {
+            // No specific rules or definition provided, generate default placeholder rules
+            this._generateInitialMappingRules({});
+            console.log("VisualizerController: Initialized with default (placeholder) mappingRules.");
         }
-        this.dataChannelDefinition = config.dataChannelDefinition || {};
-        this.mappingRules = {
-            ubo: [], // Array of objects: { snapshotField: string, uboChannelIndex: int, defaultValue: float, transform?: function }
-            direct: {} // Object: snapshotField: { coreStateName: string, defaultValue: any, transform?: function }
-        };
-        this._generateInitialMappingRules(this.dataChannelDefinition); // This will populate the new structure
-        console.log("VisualizerController initialized with config:", config);
-        console.log("Initial mapping rules:", JSON.parse(JSON.stringify(this.mappingRules))); // Deep copy for logging
+        console.log("VisualizerController: Initial mapping rules set:", JSON.stringify(this.mappingRules, null, 2));
+
+
+        if (config.baseParameters) {
+            this.core.updateParameters(config.baseParameters);
+            console.log("VisualizerController: Base parameters applied.", config.baseParameters);
+        }
+        console.log("VisualizerController initialized.");
     }
 
-    _generateInitialMappingRules(definition) {
-        // Clear existing rules before applying new definition or defaults
-        this.mappingRules.ubo = [];
-        this.mappingRules.direct = {};
-
-        if (definition && definition.uboChannels && Array.isArray(definition.uboChannels)) {
-            definition.uboChannels.forEach(rule => {
-                if (rule.snapshotField && typeof rule.uboChannelIndex === 'number' && rule.hasOwnProperty('defaultValue')) {
-                    this.mappingRules.ubo.push({ ...rule });
-                } else {
-                    console.warn("VisualizerController: Invalid UBO channel rule in definition:", rule);
-                }
-            });
-        } else {
-            // Setup default UBO mappings if no definition provided for uboChannels
-            for (let i = 0; i < 8; i++) { // Default for first 8 channels
+    // Generates basic mapping rules if detailed ones aren't provided
+    _generateInitialMappingRules(dataChannelDefinition) {
+        // Example: If dataChannelDefinition is an array of objects like
+        // [{ snapshotField: 'fieldA', uboChannelIndex: 0, defaultValue: 0.0, transform: 'normalize' }, ...]
+        if (Array.isArray(dataChannelDefinition)) {
+            this.mappingRules.ubo = dataChannelDefinition.map(def => ({
+                snapshotField: def.snapshotField,
+                uboChannelIndex: def.uboChannelIndex,
+                defaultValue: def.defaultValue !== undefined ? def.defaultValue : 0.0,
+                transform: def.transform // Name of the transform function or actual function
+            }));
+        } else if (typeof dataChannelDefinition === 'object' && dataChannelDefinition !== null) {
+            // Handle other formats if necessary, e.g., a count for generic channels
+            const count = dataChannelDefinition.count || 0;
+            for (let i = 0; i < count; i++) {
+                const name = (dataChannelDefinition.names && dataChannelDefinition.names[i]) ? dataChannelDefinition.names[i] : `channel_${i}`;
                 this.mappingRules.ubo.push({
-                    snapshotField: `channel${i}`,
+                    snapshotField: name, // Expect dataSnapshot to have fields like "channel_0", "channel_1"
                     uboChannelIndex: i,
                     defaultValue: 0.0
                 });
             }
-            console.log("VisualizerController: Using default placeholder UBO mapping rules.");
         }
-
-        if (definition && definition.directParams && Array.isArray(definition.directParams)) {
-            definition.directParams.forEach(rule => {
-                if (rule.snapshotField && rule.coreStateName && rule.hasOwnProperty('defaultValue')) {
-                    this.mappingRules.direct[rule.snapshotField] = { ...rule };
-                } else {
-                    console.warn("VisualizerController: Invalid direct parameter rule in definition:", rule);
-                }
-            });
-        } else {
-            // Setup default direct mappings if no definition provided for directParams
-            this.mappingRules.direct['polytope_rotationSpeed'] = { coreStateName: 'rotationSpeed', defaultValue: 0.5 };
-            this.mappingRules.direct['main_morphFactor'] = { coreStateName: 'morphFactor', defaultValue: 0.5 };
-            this.mappingRules.direct['visual_glitchIntensity'] = { coreStateName: 'glitchIntensity', defaultValue: 0.0 };
-            console.log("VisualizerController: Using default placeholder direct mapping rules.");
-        }
-        // No return needed as it modifies this.mappingRules directly
+        // Could also populate this.mappingRules.direct with some defaults if needed
+        console.log("VisualizerController: Generated initial mapping rules:", JSON.stringify(this.mappingRules, null, 2));
     }
 
-    /**
-     * Sets the current polytope (geometry).
-     * @param {string} polytopeName - The registered name of the geometry.
-     */
-    setPolytope(polytopeName) {
-        if (typeof polytopeName === 'string') {
-            this.core.updateParameters({ geometryType: polytopeName });
-            console.log(`VisualizerController: Polytope changed to ${polytopeName}`);
-        } else {
-            console.error("VisualizerController: Invalid polytopeName provided.");
+    // Helper to get nested values from object based on string path
+    _getValueFromPath(obj, path) {
+        if (obj === undefined || obj === null) return undefined;
+        // Basic path traversal, e.g. "prop.subProp[0].value"
+        // For simplicity, this version handles basic dot notation. Add array/complex path later if needed.
+        const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
+        let current = obj;
+        for (const part of parts) {
+            if (current && typeof current === 'object' && part in current) {
+                current = current[part];
+            } else {
+                return undefined; // Path does not exist
+            }
         }
+        return current;
     }
 
-    /**
-     * Sets global visual style parameters.
-     * @param {object} styleParams - Object containing style parameters.
-     * Example: { core: { morphFactor: 0.5, rotationSpeed: 0.1 }, projection: { perspective: { baseDistance: 3.0 } } }
-     */
-    setVisualStyle(styleParams) {
-        if (typeof styleParams !== 'object' || styleParams === null) {
-            console.error("VisualizerController: Invalid styleParams object provided.");
+
+    updateData(dataSnapshot) {
+        console.log("VisualizerController.updateData received snapshot:", JSON.stringify(dataSnapshot, null, 2));
+        if (!this.core) {
+            console.error("VisualizerController: HypercubeCore not initialized.");
             return;
         }
 
-        const paramsToUpdate = {};
+        const uboDataArray = new Array(this.core.uboChannelCount || 64).fill(0.0); // Assuming fixed size from core
+        const directParamsToUpdate = {};
 
-        // Helper to recursively flatten and map parameters
-        const processParams = (obj, prefix = '') => {
-            for (const key in obj) {
-                if (obj.hasOwnProperty(key)) {
-                    const value = obj[key];
-                    const fullKey = prefix ? `${prefix}_${key}` : key;
+        // Process UBO mappings
+        (this.mappingRules.ubo || []).forEach(rule => {
+            let value = this._getValueFromPath(dataSnapshot, rule.snapshotField);
+            if (value === undefined) {
+                value = rule.defaultValue !== undefined ? rule.defaultValue : 0.0;
+            }
 
-                    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                        // Check for specific known object structures like colorScheme first
-                        if (key === 'colorScheme') {
-                            // colorScheme is a direct state property in HypercubeCore,
-                            // but its sub-properties (primary, secondary, background) are what we update.
-                            // HypercubeCore's updateParameters handles merging of colorScheme objects.
-                            paramsToUpdate.colorScheme = { ...(this.core.state.colorScheme || {}), ...value };
-                        } else if (key === 'colors') { // Legacy support for styleParams.colors.primary
-                             paramsToUpdate.colorScheme = {
-                                ...(this.core.state.colorScheme || {}),
-                                ...(paramsToUpdate.colorScheme || {}), // merge with already processed colorScheme if any
-                             };
-                             if(value.primary) paramsToUpdate.colorScheme.primary = value.primary;
-                             if(value.secondary) paramsToUpdate.colorScheme.secondary = value.secondary;
-                             if(value.background) paramsToUpdate.colorScheme.background = value.background;
-                        } else {
-                            // For other nested objects, create a flattened key structure for HypercubeCore state
-                            // e.g., projection: { perspective: { baseDistance: 3.0 } } becomes proj_perspective_baseDistance
-                            // This requires HypercubeCore.state to have keys like 'proj_perspective_baseDistance'
-                            // This part assumes that the structure in styleParams matches the flattened structure
-                            // expected by HypercubeCore's DEFAULT_STATE and updateParameters logic.
-                            // Example: styleParams.projection.perspective.baseDistance should map to
-                            // core.state.proj_perspective_baseDistance
-                            // We will assume for now that the keys in styleParams are already somewhat flattened
-                            // or directly match HypercubeCore state keys.
-                            // A more robust system would use a predefined schema or map.
-
-                            // Let's try a simple flattening for common prefixes like 'proj' and 'geom' and 'lattice'
-                            if (prefix === 'projection' || prefix === 'geometry' || prefix === 'lattice') {
-                                // e.g. projection.perspective.baseDistance -> proj_perspective_baseDistance
-                                // geometry.hypercube.wCoordFactor1 -> geom_hypercube_wCoordFactor1
-                                // lattice.lineWidth -> lattice_lineWidth (if not already prefixed)
-                                 processParams(value, `${prefix.substring(0,4)}_${key}`);
-                            } else if (prefix === '' && (key === 'projection' || key === 'geometry' || key === 'lattice' || key === 'core')) {
-                                 processParams(value, key === 'core' ? '' : key); // 'core' prefix is not added to state keys
-                            } else {
-                                // For other nested objects not following the pattern, they are ignored for now
-                                // or would require specific handling.
-                                console.warn(`VisualizerController: Unsupported nested style structure for key '${fullKey}'.`);
-                            }
-                        }
-                    } else {
-                        // Direct value or already flattened key
-                        // If prefix is 'core', we don't add it (e.g. core.morphFactor -> morphFactor)
-                        const stateKey = (prefix === 'core' || prefix === '') ? key : fullKey;
-                        paramsToUpdate[stateKey] = value;
+            if (rule.transform) {
+                const transformFn = typeof rule.transform === 'function' ? rule.transform : this.transformations[rule.transform];
+                if (transformFn) {
+                    try {
+                        value = transformFn(value, rule.transformMin, rule.transformMax); // Pass min/max if defined for normalize
+                    } catch (e) {
+                        console.error(`Error applying transform ${rule.transform} to ${rule.snapshotField}:`, e);
                     }
+                } else {
+                    console.warn(`Transform function '${rule.transform}' not found for field '${rule.snapshotField}'.`);
                 }
             }
-        };
 
-        processParams(styleParams);
+            if (rule.uboChannelIndex !== undefined && rule.uboChannelIndex < uboDataArray.length) {
+                uboDataArray[rule.uboChannelIndex] = value;
+            } else {
+                 console.warn(`Invalid uboChannelIndex ${rule.uboChannelIndex} for field '${rule.snapshotField}'. Max index: ${uboDataArray.length -1}`);
+            }
+        });
 
-        // Legacy direct properties (kept for some backward compatibility or simple cases)
-        // These will be overwritten by the processParams if there are conflicts, which is usually fine.
-        if (styleParams.hasOwnProperty('dimensions') && typeof styleParams.dimensions === 'number') {
-            paramsToUpdate.dimensions = styleParams.dimensions;
-        }
-        if (styleParams.hasOwnProperty('projectionMethod') && typeof styleParams.projectionMethod === 'string') {
-            paramsToUpdate.projectionMethod = styleParams.projectionMethod;
-        }
-        // ... (add other direct top-level properties from the old setVisualStyle if needed)
+        // Process direct parameter mappings
+        for (const snapshotField in (this.mappingRules.direct || {})) {
+            const rule = this.mappingRules.direct[snapshotField];
+            let value = this._getValueFromPath(dataSnapshot, snapshotField);
 
-        if (Object.keys(paramsToUpdate).length > 0) {
-            this.core.updateParameters(paramsToUpdate);
-            console.log("VisualizerController: Visual styles updated", paramsToUpdate);
-        } else {
-            console.log("VisualizerController: No valid visual styles provided or mapped to update.");
-        }
-    }
-
-    /**
-     * Updates the data channels for the visualization.
-     * @param {object} dataSnapshot - Object containing data fields to map.
-     */
-    updateData(dataSnapshot) {
-        if (typeof dataSnapshot !== 'object' || dataSnapshot === null) {
-            console.error("VisualizerController: Invalid dataSnapshot object provided to updateData.");
-            return;
-        }
-
-        // Ensure globalDataBuffer is available and has a length, otherwise use a default size.
-        const uboSize = (this.core && this.core.globalDataBuffer && this.core.globalDataBuffer.length > 0)
-                        ? this.core.globalDataBuffer.length
-                        : 64; // Default UBO size if core or buffer not fully initialized
-
-        let uboDataArray = new Float32Array(uboSize).fill(0.0);
-        const directParamsToUpdate = {};
-        const unmappedFields = { ...dataSnapshot };
-
-        // UBO Mapping
-        if (this.mappingRules.ubo && Array.isArray(this.mappingRules.ubo)) {
-            this.mappingRules.ubo.forEach(rule => {
-                let value;
-                if (dataSnapshot.hasOwnProperty(rule.snapshotField)) {
-                    value = dataSnapshot[rule.snapshotField];
-                    delete unmappedFields[rule.snapshotField]; // Mark as mapped
-                } else {
-                    value = rule.defaultValue;
-                }
-
-                if (rule.transform && typeof rule.transform === 'function') {
-                    try {
-                        value = rule.transform(value);
-                    } catch (e) {
-                        console.warn(`VisualizerController: Error transforming UBO field '${rule.snapshotField}':`, e);
-                        value = rule.defaultValue; // Fallback on transform error
-                    }
-                }
-
-                const numericValue = parseFloat(value);
-                if (!isNaN(numericValue)) {
-                    if (rule.uboChannelIndex >= 0 && rule.uboChannelIndex < uboSize) {
-                        uboDataArray[rule.uboChannelIndex] = numericValue;
-                        // console.log(`VisualizerController: Mapped UBO field '${rule.snapshotField}' (raw: ${dataSnapshot[rule.snapshotField]}, transformed: ${numericValue}) to channel ${rule.uboChannelIndex}`);
-                    } else {
-                        console.warn(`VisualizerController: Invalid channel index ${rule.uboChannelIndex} for UBO field '${rule.snapshotField}'`);
-                    }
-                } else {
-                    console.warn(`VisualizerController: Could not parse float for UBO field '${rule.snapshotField}' (value: ${value}). Using default ${rule.defaultValue}.`);
-                    uboDataArray[rule.uboChannelIndex] = parseFloat(rule.defaultValue); // Ensure default is also float
-                }
-            });
-            console.log("UBO Data Sent:", uboDataArray); // Added for verification
-            this.core.updateParameters({ dataChannels: uboDataArray });
-        } else {
-            console.warn("VisualizerController: UBO mapping rules are missing or not an array.");
-        }
-
-        // Direct Parameter Mapping
-        if (this.mappingRules.direct && typeof this.mappingRules.direct === 'object') {
-            for (const snapshotField in this.mappingRules.direct) {
-                const rule = this.mappingRules.direct[snapshotField];
-                let value;
-
-                if (dataSnapshot.hasOwnProperty(snapshotField)) {
-                    value = dataSnapshot[snapshotField];
-                    delete unmappedFields[snapshotField]; // Mark as mapped
-                } else {
-                    value = rule.defaultValue;
-                }
-
-                if (rule.transform && typeof rule.transform === 'function') {
-                    try {
-                        value = rule.transform(value);
-                    } catch (e) {
-                        console.warn(`VisualizerController: Error transforming direct param '${rule.coreStateName}' from field '${snapshotField}':`, e);
-                        value = rule.defaultValue; // Fallback on transform error
-                    }
-                }
-
-                // Basic type validation based on defaultValue's type (could be more robust)
-                if (typeof value !== typeof rule.defaultValue && rule.defaultValue !== null && typeof rule.defaultValue !== 'undefined') {
-                     // Attempt type coersion for numbers specifically if default is number and value is string
-                    if (typeof rule.defaultValue === 'number' && typeof value === 'string') {
-                        const parsedValue = parseFloat(value);
-                        if (!isNaN(parsedValue)) {
-                            value = parsedValue;
-                        } else {
-                             console.warn(`VisualizerController: Type mismatch for direct param '${rule.coreStateName}'. Expected type ~${typeof rule.defaultValue}, got ${typeof value}. Value:`, dataSnapshot[snapshotField], `Rule:`, rule, `Using default.`);
-                             value = rule.defaultValue;
+            if (value !== undefined) {
+                if (rule.transform) {
+                    const transformFn = typeof rule.transform === 'function' ? rule.transform : this.transformations[rule.transform];
+                    if (transformFn) {
+                        try {
+                            value = transformFn(value, rule.transformMin, rule.transformMax);
+                        } catch (e) {
+                            console.error(`Error applying transform ${rule.transform} to direct param ${rule.coreStateName} (from ${snapshotField}):`, e);
                         }
-                    } else if (typeof rule.defaultValue === 'boolean' && typeof value !== 'boolean') {
-                        // Simple coersion for boolean
-                        value = !!value;
-                    }
-                    else {
-                        console.warn(`VisualizerController: Type mismatch for direct param '${rule.coreStateName}'. Expected type ~${typeof rule.defaultValue}, got ${typeof value}. Value:`, dataSnapshot[snapshotField], `Rule:`, rule, `Using default.`);
-                        value = rule.defaultValue;
+                    } else {
+                         console.warn(`Transform function '${rule.transform}' not found for direct param '${rule.coreStateName}'.`);
                     }
                 }
                 directParamsToUpdate[rule.coreStateName] = value;
-                // console.log(`VisualizerController: Mapped direct field '${snapshotField}' to core parameter '${rule.coreStateName}' (raw: ${dataSnapshot[snapshotField]}, final value: ${JSON.stringify(value)})`);
+            } else if (rule.defaultValue !== undefined) {
+                directParamsToUpdate[rule.coreStateName] = rule.defaultValue;
             }
-        } else {
-            console.warn("VisualizerController: Direct mapping rules are missing or not an object.");
         }
 
+        // Update core UBOs
+        if (uboDataArray.length > 0) {
+            console.log("VisualizerController: UBO Data Array prepared for core:", uboDataArray.map(v => typeof v === 'number' ? v.toFixed(3) : v));
+            this.core.updateUBOChannels(uboDataArray);
+        }
+
+        // Update core direct parameters
         if (Object.keys(directParamsToUpdate).length > 0) {
+            console.log("VisualizerController: Updating direct core parameters:", directParamsToUpdate);
             this.core.updateParameters(directParamsToUpdate);
         }
-
-        // Log unmapped fields
-        if (Object.keys(unmappedFields).length > 0) {
-            console.log("VisualizerController: Unmapped fields in dataSnapshot:", unmappedFields);
-        }
+        // console.log("VisualizerController: Data update processed.");
     }
 
-    /**
-     * Sets or updates the data mapping rules.
-     * @param {object} newRules - Object with optional 'ubo' and 'direct' properties.
-     *                          'ubo' should be an array of rule objects.
-     *                          'direct' should be an object where keys are snapshotFields.
-     */
-    setDataMappingRules(newRules) {
-        if (typeof newRules !== 'object' || newRules === null) {
-            console.error("VisualizerController: Invalid newRules object provided to setDataMappingRules.");
+    setVisualStyle(styleParams) {
+        if (!this.core) {
+            console.error("VisualizerController: HypercubeCore not initialized.");
             return;
         }
+        console.log("VisualizerController.setVisualStyle received styleParams:", JSON.stringify(styleParams, null, 2));
+        // Directly pass to core; core should know its own state structure.
+        // No complex mapping here, assumes styleParams keys match core.state keys.
+        this.core.updateParameters(styleParams);
+        console.log("VisualizerController: Visual styles update request sent to core.");
+    }
 
-        if (newRules.ubo && Array.isArray(newRules.ubo)) {
-            // Simple strategy: Replace UBO rules.
-            // More complex: merge based on uboChannelIndex or snapshotField.
-            this.mappingRules.ubo = [];
-            newRules.ubo.forEach(rule => {
-                if (rule.snapshotField && typeof rule.uboChannelIndex === 'number' && rule.hasOwnProperty('defaultValue')) {
-                    this.mappingRules.ubo.push({ ...rule });
-                } else {
-                    console.warn("VisualizerController: Invalid UBO channel rule in newRules:", rule);
-                }
-            });
+    setPolytope(polytopeName, styleParams = {}) {
+        if (!this.core) {
+            console.error("VisualizerController: HypercubeCore not initialized.");
+            return;
+        }
+        console.log(`VisualizerController: Attempting to change polytope to '${polytopeName}' with params:`, styleParams);
+        this.core.setPolytope(polytopeName, styleParams);
+        // Core's setPolytope should handle logging success/failure
+    }
+
+    setDataMappingRules(newRules) {
+        console.log("VisualizerController.setDataMappingRules received newRules:", JSON.stringify(newRules, null, 2));
+        if (newRules && newRules.ubo && Array.isArray(newRules.ubo)) {
+            this.mappingRules.ubo = JSON.parse(JSON.stringify(newRules.ubo)); // Deep copy
             console.log("VisualizerController: UBO mapping rules updated.");
         }
-
-        if (newRules.direct && typeof newRules.direct === 'object') {
-            // Merge direct rules: new rules override or add to existing ones.
-            for (const snapshotField in newRules.direct) {
-                const rule = newRules.direct[snapshotField];
-                if (rule.coreStateName && rule.hasOwnProperty('defaultValue')) {
-                    this.mappingRules.direct[snapshotField] = { ...rule };
-                } else {
-                    console.warn("VisualizerController: Invalid direct parameter rule in newRules for field:", snapshotField, rule);
-                }
-            }
+        if (newRules && newRules.direct && typeof newRules.direct === 'object') {
+            this.mappingRules.direct = JSON.parse(JSON.stringify(newRules.direct)); // Deep copy
             console.log("VisualizerController: Direct mapping rules updated.");
         }
-        console.log("VisualizerController: Mapping rules are now:", JSON.parse(JSON.stringify(this.mappingRules)));
+        console.log("VisualizerController: Current mapping rules are now:", JSON.stringify(this.mappingRules, null, 2));
     }
 
     setSpecificUniform(uniformName, value) {
-        // The warning can be softened as HypercubeCore.updateParameters now handles many state vars that map to uniforms.
-        console.log(`VisualizerController: setSpecificUniform('${uniformName}', `, value, `) called. This directly updates a HypercubeCore state parameter.`);
-        if (typeof uniformName === 'string') {
-            this.core.updateParameters({ [uniformName]: value });
-        } else {
-            console.error("VisualizerController: Invalid uniformName for setSpecificUniform.");
+        if (!this.core) {
+            console.error("VisualizerController: HypercubeCore not initialized.");
+            return;
         }
+        console.log(`VisualizerController: Setting specific uniform '${uniformName}' to:`, value);
+        this.core.setUniform(uniformName, value); // Assuming core has a generic setUniform method
     }
 
-    // Placeholder for getSnapshot
-    getSnapshot(config = { format: 'png' }) {
-        console.warn("VisualizerController: getSnapshot() called but not implemented.", config);
-        return Promise.reject(new Error("getSnapshot not implemented."));
+    async getSnapshot(config) {
+        if (!this.core) {
+            console.error("VisualizerController: HypercubeCore not initialized.");
+            return null;
+        }
+        console.log("VisualizerController: Requesting snapshot with config:", config);
+        return this.core.getSnapshot(config);
     }
 
-    // Placeholder for dispose
     dispose() {
-        console.log("VisualizerController: dispose() called.");
-        if (this.core && typeof this.core.dispose === 'function') {
-            this.core.dispose();
+        if (!this.core) {
+            console.error("VisualizerController: HypercubeCore not initialized or already disposed.");
+            return;
         }
-        this.core = null; // Release reference
+        console.log("VisualizerController: Disposing core resources.");
+        this.core.dispose();
     }
 }
-export default VisualizerController;

@@ -1,158 +1,98 @@
-// Placeholder for schemaToGeometryMap, actual map would be more extensive
-const schemaToGeometryMap = {
-  'default': 'hypercube',
-  'contact': 'hypersphere',
-  // ... other mappings
-};
+// controllers/PMKDataAdapter.js
 
-// Default PMK to Visualization Mappings (from pmk-integration.md)
-const defaultPmkMappingRules = {
-  ubo: {
-    'architect.confidence': { channelIndex: 0 },
-    'architect.planComplexity': { channelIndex: 1 },
-    'architect.activeNodes': { channelIndex: 2, transform: 'normalize' },
-    'extractor.load': { channelIndex: 8 },
-    'extractor.throughput': { channelIndex: 9, transform: 'logScale' },
-    'focus.temperature': { channelIndex: 16 },
-    'focus.abstractionLevel': { channelIndex: 17 },
-    'focus.contextWindow[0]': { channelIndex: 18 },
-    'focus.contextWindow[1]': { channelIndex: 19 }
-  },
-  direct: {
-    'schema.type': {
-      stateName: 'geometryType',
-      transform: (type) => schemaToGeometryMap[type] || 'hypercube'
-    },
-    'system.glitchLevel': { stateName: 'glitchIntensity' },
-    'system.morphState': { stateName: 'morphFactor' }
-  }
+// Placeholder for schemaToGeometryMap, actual map would be more extensive
+// This map helps PMKDataAdapter decide which geometry to request from VisualizerController
+// based on the type of schema currently active in the PMK (e.g., KerbelizedParserator).
+const schemaToGeometryMap = {
+  'default': 'hypercube', // Fallback geometry
+  'base_schema': 'hypersphere', // Example mapping
+  'contact_extraction_v1': 'duocylinder', // Example mapping
+  'email_templ_v0': 'hypertetrahedron', // Example mapping for a generated schema
+  'date_templ_v0': 'hypercube', // Example
+  // ... other mappings for known schema IDs or types
 };
 
 export class PMKDataAdapter {
-  constructor(visualizerController, initialRules) {
+  constructor(visualizerController) {
     if (!visualizerController) {
+      console.error("PMKDataAdapter: VisualizerController instance is required.");
       throw new Error("PMKDataAdapter: VisualizerController instance is required.");
     }
     this.vizController = visualizerController;
-    this.schemaToGeometryMap = { ...schemaToGeometryMap }; // Allow modification later
-    this.mappingRules = JSON.parse(JSON.stringify(initialRules || defaultPmkMappingRules));
-    this.transformations = {
-      normalize: (value) => { console.log(`Transform: normalize(${value})`); return value; /* Placeholder */ },
-      logScale: (value) => { console.log(`Transform: logScale(${value})`); return value > 0 ? Math.log(value) : 0; /* Basic placeholder */ }
-    };
-    console.log("PMKDataAdapter initialized.");
+    // schemaToGeometryMap can be made configurable if needed in the future
+    this.schemaToGeometryMap = { ...schemaToGeometryMap };
+    console.log("PMKDataAdapter initialized (simplified - passes structured dataSnapshot to VisualizerController).");
   }
 
-  setDataMappingRules(rules) {
-    if (!rules) {
-      console.warn("PMKDataAdapter.setDataMappingRules: No rules provided. Using default rules.");
-      this.mappingRules = JSON.parse(JSON.stringify(defaultPmkMappingRules));
-    } else {
-      this.mappingRules = JSON.parse(JSON.stringify(rules)); // Deep copy
-    }
-    console.log("PMKDataAdapter: Mapping rules updated.");
-  }
+  // The `setDataMappingRules` method, if it existed here, would be for PMKDataAdapter's own internal
+  // transformation rules if it were doing more complex field mapping beyond direct extraction.
+  // Since VisualizerController now handles the detailed mapping from snapshotField to UBO/directCoreParam,
+  // PMKDataAdapter's primary job is to create a well-structured snapshotForViz.
 
-  // Helper to get nested values from object based on string path
-  getValueFromPath(obj, path) {
-    if (obj === undefined || obj === null) return undefined;
-    const parts = path.replace(/\[(\w+)\]/g, '.$1').split('.'); // Handle array indices like '[0]'
-    let current = obj;
-    for (const part of parts) {
-      if (current && typeof current === 'object' && part in current) {
-        current = current[part];
-      } else {
-        return undefined; // Path does not exist
-      }
-    }
-    return current;
-  }
-
-  processPMKUpdate(dataSnapshot) {
-    if (!dataSnapshot) {
-      console.error("PMKDataAdapter.processPMKUpdate: No dataSnapshot provided.");
+  processPMKUpdate(pmkResult) {
+    if (!pmkResult) {
+      console.error("PMKDataAdapter.processPMKUpdate: No pmkResult provided.");
       return;
     }
-    console.log("PMKDataAdapter.processPMKUpdate received snapshot:", dataSnapshot);
+    console.log("PMKDataAdapter.processPMKUpdate received pmkResult:", JSON.stringify(pmkResult, null, 2));
 
-    const uboData = {}; // Using an object for sparse updates, controller can map to array
-    const directParams = {};
+    // 1. Prepare a generic dataSnapshot for VisualizerController's updateData method
+    const snapshotForViz = {};
 
-    // Process UBO mappings
-    if (this.mappingRules.ubo) {
-      for (const path in this.mappingRules.ubo) {
-        const rule = this.mappingRules.ubo[path];
-        let value = this.getValueFromPath(dataSnapshot, path);
+    if (pmkResult.confidence !== undefined) snapshotForViz.kp_confidence = pmkResult.confidence;
+    if (pmkResult.iterations !== undefined) snapshotForViz.kp_iterations = pmkResult.iterations;
+    if (pmkResult.schemaVersion !== undefined) snapshotForViz.kp_schema_version = pmkResult.schemaVersion;
 
-        if (value !== undefined && rule.transform && this.transformations[rule.transform]) {
-          value = this.transformations[rule.transform](value);
-        } else if (value !== undefined && rule.transform && typeof rule.transform === 'function') {
-          // Support inline transform functions in rules if ever needed
-          value = rule.transform(value);
-        }
-
-        if (value !== undefined) {
-          uboData[rule.channelIndex] = value;
-        } else {
-          console.warn(`PMKDataAdapter: Value for UBO path "${path}" not found in snapshot or rule problem.`);
-        }
+    if (pmkResult.metadata) {
+      if (pmkResult.metadata.schemaIdUsed) snapshotForViz.kp_schema_id_used = pmkResult.metadata.schemaIdUsed;
+      if (pmkResult.metadata.focusParams) {
+        if (pmkResult.metadata.focusParams.temperature !== undefined) snapshotForViz.kp_focus_temp = pmkResult.metadata.focusParams.temperature;
+        if (pmkResult.metadata.focusParams.abstractionWeight !== undefined) snapshotForViz.kp_focus_weight = pmkResult.metadata.focusParams.abstractionWeight;
+        if (pmkResult.metadata.focusParams.decisionSource) snapshotForViz.kp_focus_decision_source = pmkResult.metadata.focusParams.decisionSource;
+        if (pmkResult.metadata.focusParams.goalUsed) snapshotForViz.kp_focus_goal_used = pmkResult.metadata.focusParams.goalUsed;
+      }
+      // Example: if pppProjectionDetails contains something simple to visualize
+      if (pmkResult.metadata.pppProjectionDetails && pmkResult.metadata.pppProjectionDetails.relevanceScore !== undefined) {
+          snapshotForViz.kp_ppp_relevance = pmkResult.metadata.pppProjectionDetails.relevanceScore;
       }
     }
 
-    // Process direct parameter mappings
-    if (this.mappingRules.direct) {
-      for (const path in this.mappingRules.direct) {
-        const rule = this.mappingRules.direct[path];
-        let value = this.getValueFromPath(dataSnapshot, path);
+    // Conceptual error count - assuming pmkResult might have an 'errors' array or similar field in future
+    snapshotForViz.kp_error_count = (pmkResult.errors && Array.isArray(pmkResult.errors)) ? pmkResult.errors.length : 0;
+    snapshotForViz.kp_payload_size = pmkResult.data ? JSON.stringify(pmkResult.data).length : 0;
 
-        if (value !== undefined && rule.transform && this.transformations[rule.transform]) {
-          // This specific direct rule has a custom transform in the example not in this.transformations
-          if (path === 'schema.type' && typeof rule.transform === 'function') {
-             value = rule.transform(value); // Uses the lambda from the rule
-          } else {
-             value = this.transformations[rule.transform](value);
-          }
-        } else if (value !== undefined && typeof rule.transform === 'function') {
-          value = rule.transform(value);
+    // 2. Call VisualizerController.updateData
+    if (Object.keys(snapshotForViz).length > 0) {
+        console.log("PMKDataAdapter: Calling vizController.updateData with snapshotForViz:", JSON.stringify(snapshotForViz, null, 2));
+        this.vizController.updateData(snapshotForViz);
+    } else {
+        console.log("PMKDataAdapter: No data extracted from pmkResult for snapshotForViz. Skipping vizController.updateData.");
+    }
+
+    // 3. Call VisualizerController.setPolytope based on schema type
+    if (pmkResult.metadata && pmkResult.metadata.schemaIdUsed) {
+        const schemaId = pmkResult.metadata.schemaIdUsed;
+        // Attempt to find a specific match, then a match based on generic part of ID, then default
+        let geometryName = this.schemaToGeometryMap[schemaId];
+        if (!geometryName) {
+            const baseSchemaType = schemaId.split('_')[0]; // e.g., "email" from "email_templ_v0"
+            geometryName = this.schemaToGeometryMap[baseSchemaType] || this.schemaToGeometryMap['default'] || 'hypercube';
         }
 
-        if (value !== undefined) {
-          directParams[rule.stateName] = value;
-        } else {
-          console.warn(`PMKDataAdapter: Value for direct param path "${path}" not found in snapshot.`);
-        }
-      }
+        console.log(`PMKDataAdapter: Calling vizController.setPolytope('${geometryName}') based on schemaId '${schemaId}'.`);
+        this.vizController.setPolytope(geometryName);
     }
 
-    // Log what would be sent to VisualizerController
-    // In a real scenario, you'd call methods on this.vizController
-    console.log("PMKDataAdapter: Processed UBO data:", uboData);
-    console.log("PMKDataAdapter: Processed Direct Parameters:", directParams);
-
-    // Example calls (assuming these methods exist on VisualizerController)
-    if (this.vizController && typeof this.vizController.updateUBOChannels === 'function') {
-       // this.vizController.updateUBOChannels(uboData); // Assuming uboData is an object { channelIdx: value, ... }
+    // 4. Call VisualizerController.setVisualStyle based on conditions
+    if (snapshotForViz.kp_error_count > 0) {
+        console.log("PMKDataAdapter: Setting error visual style due to kp_error_count > 0.");
+        this.vizController.setVisualStyle({ glitchIntensity: 0.6, colorScheme: { primary: [0.8,0.1,0.1,1.0], secondary: [1,0.5,0.5,1.0] } });
+    } else if (pmkResult.confidence !== undefined && pmkResult.confidence > 0.9) {
+        console.log("PMKDataAdapter: Setting high-confidence visual style.");
+        this.vizController.setVisualStyle({ glitchIntensity: 0.0, colorScheme: { primary: [0.1,0.8,0.1,1.0], secondary: [0.5,1,0.5,1.0] } });
     } else {
-       // console.warn("PMKDataAdapter: vizController.updateUBOChannels is not a function or vizController not set.");
+        console.log("PMKDataAdapter: Setting/resetting to default/no-error visual style.");
+        this.vizController.setVisualStyle({ glitchIntensity: 0.0 }); // Explicitly reset or set to a 'normal' style
     }
-    if (this.vizController && typeof this.vizController.updateDirectParameters === 'function') {
-       // this.vizController.updateDirectParameters(directParams);
-    } else {
-       // console.warn("PMKDataAdapter: vizController.updateDirectParameters is not a function or vizController not set.");
-    }
-     if (this.vizController && typeof this.vizController.updateData === 'function') {
-        // The VisualizerController from previous setup has an updateData method
-        // that might take a combined object or handle UBOs/direct params internally.
-        // For now, this is a placeholder for how PMKDataAdapter communicates.
-        // This might be the primary method to call.
-        // Let's assume for now it expects an object similar to what VisualizerController's own updateData expects
-        // The current VisualizerController.updateData() seems to handle nested objects directly.
-        // So PMKDataAdapter's role is to *transform* the PMK snapshot into the structure
-        // that VisualizerController.updateData() can most easily consume.
-
-        // For this step, we'll just log the processed data. Integration with actual
-        // VisualizerController methods will be part of a later step or test.
-     }
-
   }
 }

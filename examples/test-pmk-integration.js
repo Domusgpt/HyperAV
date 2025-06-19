@@ -1,33 +1,95 @@
 // Ensure all paths are correct relative to 'examples/' directory
-import { VisualizerController } from '../controllers/VisualizerController.js'; // Though using Dummy for this test
+import { VisualizerController } from '../controllers/VisualizerController.js'; // Actual VC, though Dummy is used
 import { PMKDataAdapter } from '../controllers/PMKDataAdapter.js';
 import { KerbelizedParserator } from '../pmk-integration/parsers/KerbelizedParserator.js';
-import { PPPProjector } from '../pmk-integration/parsers/PPPProjector.js'; // Not directly used here but good for context
-import { TimestampedThoughtBuffer } from '../pmk-integration/optimizers/TimestampedThoughtBuffer.js'; // Same as above
+import { PPPProjector } from '../pmk-integration/parsers/PPPProjector.js';
+import { TimestampedThoughtBuffer } from '../pmk-integration/optimizers/TimestampedThoughtBuffer.js';
 import { HOASBridge } from '../controllers/HOASBridge.js';
 
-console.log("test-pmk-integration.js: Loaded. Testing with HOASBridge - Iterative Processing & Schema Evolution.");
+console.log("test-pmk-integration.js: Loaded. Testing with HOASBridge - Iterative Processing & Schema Evolution. DummyVC enhanced.");
 
 class DummyVisualizerController {
-    constructor() { console.log("DummyVisualizerController instantiated for PMK test."); }
-    updateData(data) { /* console.log("DummyVisualizerController.updateData called with:", JSON.stringify(data, null, 2)); */ }
+    constructor() {
+        console.log("DummyVisualizerController instantiated for PMK test.");
+        this.currentPolytope = "hypercube"; // Default
+        this.currentStyles = { glitchIntensity: 0.0 }; // Start with a known default
+        this.lastDataSnapshot = null;
+        this.mappingRules = { ubo: [], direct: {} }; // Mock internal state
+    }
+
+    updateData(dataSnapshot) {
+        console.log("DummyVisualizerController.updateData CALLED with snapshot:", JSON.stringify(dataSnapshot, null, 2));
+        this.lastDataSnapshot = dataSnapshot;
+        // Simulate logging what would be processed based on some dummy mapping rules
+        // This helps verify the structure of dataSnapshot PMKDataAdapter sends.
+        if (this.mappingRules.ubo.length > 0 || Object.keys(this.mappingRules.direct).length > 0) {
+            console.log("  DummyVC: (Simulating mapping of received snapshot based on internal rules - not actual VC logic)");
+        } else {
+            console.log("  DummyVC: (No mapping rules set, just received data)");
+        }
+    }
+
+    setPolytope(polytopeName) {
+        console.log(`DummyVisualizerController.setPolytope CALLED with polytopeName: '${polytopeName}'`);
+        if(this.currentPolytope !== polytopeName){
+            console.log(`  DummyVC: Polytope changed from '${this.currentPolytope}' to '${polytopeName}'.`);
+            this.currentPolytope = polytopeName;
+        } else {
+            console.log(`  DummyVC: Polytope already '${polytopeName}'. No change.`);
+        }
+    }
+
+    setVisualStyle(styleParams) {
+        console.log("DummyVisualizerController.setVisualStyle CALLED with styleParams:", JSON.stringify(styleParams, null, 2));
+        // Check for actual changes to log more informatively
+        let changed = false;
+        for(const key in styleParams){
+            if(JSON.stringify(this.currentStyles[key]) !== JSON.stringify(styleParams[key])){
+                changed = true;
+                break;
+            }
+        }
+        if(changed || Object.keys(this.currentStyles).length !== Object.keys(styleParams).length && Object.keys(styleParams).length > 0){
+             console.log("  DummyVC: Visual styles updated from:", this.currentStyles, "to merge with:", styleParams);
+             this.currentStyles = { ...this.currentStyles, ...styleParams };
+        } else if (Object.keys(styleParams).length === 0) {
+            console.log("  DummyVC: setVisualStyle called with empty params (no changes).");
+        }
+         else {
+            console.log("  DummyVC: setVisualStyle called, but new styles match current. No effective change.", this.currentStyles);
+        }
+    }
+
+    setDataMappingRules(newRules) {
+        console.log("DummyVisualizerController.setDataMappingRules CALLED with newRules:", JSON.stringify(newRules, null, 2));
+        this.mappingRules = JSON.parse(JSON.stringify(newRules)); // Deep copy
+    }
+
+    setSpecificUniform(uniformName, value) {
+        console.log(`DummyVisualizerController.setSpecificUniform CALLED for '${uniformName}' with value:`, value);
+    }
+
+    // These methods are part of the actual VisualizerController's interface with HypercubeCore,
+    // but PMKDataAdapter now uses updateData, setPolytope, setVisualStyle.
+    // Logging them here is not essential for testing PMKDataAdapter's new behavior.
     updateUBOChannels(data) { /* console.log("DummyVisualizerController.updateUBOChannels called with:", JSON.stringify(data, null, 2)); */ }
     updateDirectParameters(data) { /* console.log("DummyVisualizerController.updateDirectParameters called with:", JSON.stringify(data, null, 2)); */ }
 }
 
+
 async function mainPMKTest() {
     console.log("test-pmk-integration.js: mainPMKTest() started - Iterative Processing & Schema Evolution.");
 
-    const vizController = new DummyVisualizerController();
+    const vizController = new DummyVisualizerController(); // Using the enhanced Dummy
     const pmkAdapter = new PMKDataAdapter(vizController);
 
     const initialKpConfig = {
         loggingVerbosity: "info",
         schemaGraphConfig: {
-            initialSchemaDefinition: { type: 'base_schema', complexity: 3, version: '1.0.0' }, // Start with a bit more complexity
-            minConfidenceForAdaptation: 0.6, // Schema strength adapts if confidence >= 0.6
+            initialSchemaDefinition: { type: 'base_schema', complexity: 3, version: '1.0.0' },
+            minConfidenceForAdaptation: 0.6,
             adaptationStrategy: 'conservative',
-            allowDynamicSchemaCreation: true // Enable dynamic creation from the start
+            allowDynamicSchemaCreation: true
         },
         focusOptimizerConfig: {
             defaultTemperature: 0.6,
@@ -60,18 +122,17 @@ async function mainPMKTest() {
     for (let i = 0; i < numIterations; i++) {
         console.log(`\n--- Iteration ${i + 1}/${numIterations} ---`);
 
-        currentContext.dataTypeHint = "generic_unknown"; // Default hint
+        currentContext.dataTypeHint = "generic_unknown";
         if (i === 2) {
             currentContext.dataTypeHint = "email";
             console.log("Setting dataTypeHint to 'email' for this iteration to trigger template creation.");
         } else if (i === 4) {
             currentContext.dataTypeHint = "date";
             console.log("Setting dataTypeHint to 'date' for this iteration to trigger template creation.");
-        } else if (i === 8) { // After disabling dynamic creation, try to trigger hint again
+        } else if (i === 8) {
             currentContext.dataTypeHint = "email";
             console.log("Trying dataTypeHint 'email' after (potentially) disabling dynamic creation.");
         }
-
 
         const inputData = {
             text: `Test sentence number ${i+1}. Random content: ${Math.random().toString(36).substring(2)}.`,
@@ -100,6 +161,10 @@ async function mainPMKTest() {
         } else {
             console.error(`Iter ${i+1} - Invalid result structure:`, result);
         }
+
+        // Call PMKDataAdapter to see its calls to DummyVisualizerController
+        console.log(`--- PMKDataAdapter processing result of Iter ${i+1} ---`);
+        pmkAdapter.processPMKUpdate(result); // This will now log through the DummyVC
 
         const currentSchemaCount = parserator.schemaGraph.schemas.size;
         console.log(`Current schema count: ${currentSchemaCount}`);
