@@ -1,94 +1,134 @@
 import { PMKDataAdapter } from '../../controllers/PMKDataAdapter.js';
 
-// Simple mock for console.assert in non-test environments
 const assert = console.assert || ((condition, message) => { if (!condition) throw new Error(message || "Assertion failed"); });
-
-// Mock VisualizerController for testing PMKDataAdapter
-const mockVizController = {
-  _calls: {},
-  updateData: function(data) { this._calls.updateData = (this._calls.updateData || 0) + 1; console.log("MockVizController.updateData called with:", data); },
-  updateUBOChannels: function(data) { this._calls.updateUBOChannels = (this._calls.updateUBOChannels || 0) + 1; console.log("MockVizController.updateUBOChannels called with:", data); },
-  updateDirectParameters: function(data) { this._calls.updateDirectParameters = (this._calls.updateDirectParameters || 0) + 1; console.log("MockVizController.updateDirectParameters called with:", data); },
-  resetMocks: function() { this._calls = {}; }
-};
-
-console.log("Running PMKDataAdapter.test.js (config update step - minor changes)");
-
-// Simple describe/it/beforeEach runner for plain JS
-let currentSuitePMK = "";
-let beforeEachCallbackPMK;
-function describePMK(description, suite) {
-  currentSuitePMK = description;
-  console.log(\`\nSuite: \${description}\`);
-  try { suite(); } catch (e) { console.error(\`Error in suite \${description}:\`, e); }
-  currentSuitePMK = "";
-}
-function itPMK(description, testFn) {
-  console.log(\`  Test: \${currentSuitePMK} - \${description}\`);
-  try {
-    beforeEachCallbackPMK && beforeEachCallbackPMK();
-    testFn();
-    console.log(\`    Passed: \${currentSuitePMK} - \${description}\`);
-  } catch (e) {
-    console.error(\`    Failed: \${currentSuitePMK} - \${description}\`, e.message, e.stack ? e.stack.split('\n')[1].trim() : '');
-  }
-}
-function beforeEachPMK(cb) { beforeEachCallbackPMK = cb; }
-const expectPMK = (actual) => ({
-    toBeDefined: () => assert(actual !== undefined, \`Expected \${actual} to be defined\`),
-    toBe: (expected) => assert(actual === expected, \`Expected \${actual} to be \${expected}\`),
+let currentSuite = ""; let beforeEachCallback;
+function describe(d, s) { currentSuite = d; console.log(\`\nSuite: \${d}\`); try { s(); } catch (e) { console.error(\`Error in suite \${d}:\`, e); } currentSuite = ""; }
+function it(d, fn) { console.log(\`  Test: \${currentSuite} - \${d}\`); try { beforeEachCallback && beforeEachCallback(); fn(); console.log(\`    Passed: \${currentSuite} - \${d}\`); } catch (e) { console.error(\`    Failed: \${currentSuite} - \${d}\`, e.message, e.stack ? e.stack.split('\n')[1].trim() : ''); } }
+function beforeEach(cb) { beforeEachCallback = cb; }
+const expect = (actual) => ({
+    toBeDefined: () => assert(actual !== undefined, \`Expected '\${actual}' to be defined\`),
+    toBe: (expected) => assert(actual === expected, \`Expected '\${actual}' to be '\${expected}'\`),
     toEqual: (expected) => assert(JSON.stringify(actual) === JSON.stringify(expected), \`Expected \${JSON.stringify(actual)} to equal \${JSON.stringify(expected)}\`),
-    toHaveBeenCalledTimes: (expected) => {
-        const actualCalls = typeof actual === 'function' && actual.mock ? actual.mock.calls.length : (actual && actual._calls ? Object.values(actual._calls).reduce((s,c)=>s+c,0) : 0);
-        assert(actualCalls === expected, \`Expected function to have been called \${expected} times, but was called \${actualCalls} times\`);
+    toHaveBeenCalledWith: (expectedArgs) => {
+        const funcName = actual.name || 'mockFunction';
+        assert(actual.called, \`Expected \${funcName} to have been called.\`);
+        const lastCallArgs = actual.lastArgs && actual.lastArgs.length > 0 ? actual.lastArgs[0] : undefined;
+        // For functions that might take more than one arg, like setPolytope(name, params)
+        if (Array.isArray(expectedArgs) && actual.lastArgs && actual.lastArgs.length > 1) {
+             assert(JSON.stringify(actual.lastArgs) === JSON.stringify(expectedArgs), \`Expected \${funcName} with \${JSON.stringify(expectedArgs)}, got \${JSON.stringify(actual.lastArgs)}\`);
+        } else {
+             assert(JSON.stringify(lastCallArgs) === JSON.stringify(expectedArgs), \`Expected \${funcName} with \${JSON.stringify(expectedArgs)}, got \${JSON.stringify(lastCallArgs)}\`);
+        }
+    },
+    toHaveBeenCalled: () => {
+        const funcName = actual.name || 'mockFunction';
+        assert(actual.called, \`Expected \${funcName} to have been called.\`);
     }
 });
 
+let mockVizController;
 
-describePMK('PMKDataAdapter', () => {
-  let adapter;
-
-  beforeEachPMK(() => {
-    mockVizController.resetMocks();
-    // PMKDataAdapter's constructor takes vizController and optional initialRules.
-    // The rules themselves are complex, test with default and custom.
-    adapter = new PMKDataAdapter(mockVizController);
-  });
-
-  itPMK('should instantiate with default rules if none provided', () => {
-    expectPMK(adapter).toBeDefined();
-    expectPMK(adapter.mappingRules).toBeDefined();
-    expectPMK(adapter.mappingRules.ubo['architect.confidence'].channelIndex).toBe(0);
-  });
-
-  itPMK('should instantiate with custom rules if provided', () => {
-    const customRules = { ubo: { 'custom.path': { channelIndex: 99 } } };
-    adapter = new PMKDataAdapter(mockVizController, customRules);
-    expectPMK(adapter.mappingRules.ubo['custom.path'].channelIndex).toBe(99);
-  });
-
-  itPMK('setDataMappingRules should update rules', () => {
-    const newRules = { ubo: { 'new.path': { channelIndex: 101 } }, direct: {} };
-    adapter.setDataMappingRules(JSON.parse(JSON.stringify(newRules)));
-    expectPMK(adapter.mappingRules.ubo['new.path'].channelIndex).toBe(101);
-  });
-
-  itPMK('getValueFromPath should retrieve correct values', () => {
-    const testObj = { a: { b: 1 }, c: [10, 20], d: "hello" };
-    expectPMK(adapter.getValueFromPath(testObj, 'a.b')).toBe(1);
-    expectPMK(adapter.getValueFromPath(testObj, 'c[0]')).toBe(10);
-  });
-
-  itPMK('processPMKUpdate should map data according to rules', () => {
-    // This test is more about checking that processPMKUpdate runs and produces logs.
-    // Actual calls to vizController are mocked and logged.
-    const snapshot = {
-        architect: { confidence: 0.88, planComplexity: 0.77 },
-        schema: { type: 'customTest' }
+describe('PMKDataAdapter - API Interaction', () => {
+    let adapter;
+    const basePmkResult = {
+        confidence: 0.85,
+        iterations: 3,
+        schemaVersion: "1.2.0",
+        metadata: {
+            schemaIdUsed: "contact_schema_v2",
+            focusParams: {
+                temperature: 0.6,
+                abstractionWeight: 0.55,
+                decisionSource: "goal_oriented_adjustment",
+                goalUsed: "balance_accuracy_cost"
+            },
+            pppProjectionDetails: { relevanceScore: 0.77 }
+        },
+        data: { name: "John Doe", email: "john.doe@example.com" },
+        errors: []
     };
-    adapter.processPMKUpdate(snapshot);
-    // Check console output for "Processed UBO data" and "Processed Direct Parameters"
-    // Example: expect data for channel 0 to be 0.88
-    // expect data for geometryType to be based on schemaToGeometryMap['customTest'] or default
-  });
+
+    beforeEach(() => {
+        mockVizController = {
+            name: "mockVizController", // For better error messages
+            updateData: function(data) { this.called_updateData = true; this.lastArgs_updateData = [data]; this.called = true; this.lastArgs = [data]; },
+            setPolytope: function(name, params = {}) { this.called_setPolytope = true; this.lastArgs_setPolytope = [name, params]; this.called = true; this.lastArgs = [name, params]; },
+            setVisualStyle: function(style) { this.called_setVisualStyle = true; this.lastArgs_setVisualStyle = [style]; this.called = true; this.lastArgs = [style]; },
+            resetMocks: function() {
+                this.called_updateData = false; this.lastArgs_updateData = null;
+                this.called_setPolytope = false; this.lastArgs_setPolytope = null;
+                this.called_setVisualStyle = false; this.lastArgs_setVisualStyle = null;
+                this.called = false; this.lastArgs = null;
+            }
+        };
+        mockVizController.resetMocks();
+        adapter = new PMKDataAdapter(mockVizController);
+    });
+
+    it('should instantiate correctly (no internal mappingRules)', () => {
+        expect(adapter).toBeDefined();
+        assert(adapter.mappingRules === undefined, "Adapter should not have its own mappingRules now");
+        assert(adapter.transformations === undefined, "Adapter should not have its own transformations now");
+        expect(adapter.schemaToGeometryMap).toBeDefined();
+    });
+
+    it('processPMKUpdate should call vizController.updateData with transformed snapshot', () => {
+        const pmkResult = JSON.parse(JSON.stringify(basePmkResult));
+        adapter.processPMKUpdate(pmkResult);
+        expect(mockVizController.updateData).toHaveBeenCalled();
+        const expectedSnapshotForViz = {
+            kp_confidence: 0.85,
+            kp_iterations: 3,
+            kp_schema_version: "1.2.0",
+            kp_schema_id_used: "contact_schema_v2",
+            kp_focus_temp: 0.6,
+            kp_focus_weight: 0.55,
+            kp_focus_decision_source: "goal_oriented_adjustment",
+            kp_focus_goal_used: "balance_accuracy_cost",
+            kp_ppp_relevance: 0.77,
+            kp_error_count: 0,
+            kp_payload_size: JSON.stringify(pmkResult.data).length
+        };
+        expect(mockVizController.updateData).toHaveBeenCalledWith(expectedSnapshotForViz);
+    });
+
+    it('processPMKUpdate should call vizController.setPolytope based on schemaIdUsed', () => {
+        const pmkResult = JSON.parse(JSON.stringify(basePmkResult));
+        adapter.schemaToGeometryMap['contact_schema_v2'] = 'test_polytope_contact'; // Ensure specific map entry
+        adapter.processPMKUpdate(pmkResult);
+        expect(mockVizController.setPolytope).toHaveBeenCalledWith(['test_polytope_contact']); // Adapting to array check
+    });
+
+    it('processPMKUpdate should call vizController.setPolytope with default if schemaId not in map', () => {
+        const pmkResult = JSON.parse(JSON.stringify(basePmkResult));
+        pmkResult.metadata.schemaIdUsed = "unknown_schema_id_for_polytope";
+        adapter.processPMKUpdate(pmkResult);
+        expect(mockVizController.setPolytope).toHaveBeenCalledWith(['hypercube']);
+    });
+
+    it('processPMKUpdate should call vizController.setVisualStyle for high confidence', () => {
+        const highConfidenceResult = {...basePmkResult, confidence: 0.95, errors: [] };
+        adapter.processPMKUpdate(highConfidenceResult);
+        expect(mockVizController.setVisualStyle).toHaveBeenCalled();
+        const styleArgs = mockVizController.lastArgs_setVisualStyle[0];
+        expect(styleArgs.glitchIntensity).toBe(0.0);
+        assert(styleArgs.colorScheme.primary[1] > styleArgs.colorScheme.primary[0], "Primary color should be greenish for high confidence");
+    });
+
+    it('processPMKUpdate should call vizController.setVisualStyle for errors', () => {
+        const errorResult = {...basePmkResult, errors: [{ message: "test error" }], confidence: 0.4 };
+        adapter.processPMKUpdate(errorResult);
+        expect(mockVizController.setVisualStyle).toHaveBeenCalled();
+        const styleArgs = mockVizController.lastArgs_setVisualStyle[0];
+        expect(styleArgs.glitchIntensity).toBe(0.6);
+        assert(styleArgs.colorScheme.primary[0] > styleArgs.colorScheme.primary[1], "Primary color should be reddish for errors");
+    });
+
+    it('processPMKUpdate should call vizController.setVisualStyle for normal/default state', () => {
+        const normalResult = {...basePmkResult, confidence: 0.7, errors: [] };
+        adapter.processPMKUpdate(normalResult);
+        expect(mockVizController.setVisualStyle).toHaveBeenCalled();
+        const styleArgs = mockVizController.lastArgs_setVisualStyle[0];
+        expect(styleArgs.glitchIntensity).toBe(0.0);
+    });
 });
