@@ -23,40 +23,73 @@ async function itKP(description, testFn) {
 function beforeEachKP(cb) { beforeEachCallbackKP = cb; }
 const expectKP = (actual) => ({
     toBeDefined: () => assert(actual !== undefined, \`Expected \${actual} to be defined\`),
+    toBe: (expected) => assert(actual === expected, \`Expected \${actual} to be \${expected}\`),
     toBeGreaterThan: (expected) => assert(actual > expected, \`Expected \${actual} to be greater than \${expected}\`),
+    toEqual: (expected) => assert(JSON.stringify(actual) === JSON.stringify(expected), \`Expected \${JSON.stringify(actual)} to equal \${JSON.stringify(expected)}\`),
 });
-
 
 describeKP('KerbelizedParserator', () => {
   let parserator;
+  const baseConfig = {
+      operationalMode: "test_mode",
+      defaultParsingDepth: 3,
+      enablePPPinjection: true,
+      loggingVerbosity: "debug",
+      schemaGraphConfig: { initialSchemaDefinition: {type: "test_schema_kp"} },
+      focusOptimizerConfig: { defaultTemperature: 0.5, parameterBounds: {temperature: [0.1,0.9]} },
+      thoughtBufferConfig: { maxSize: 10, defaultInjectionWeight: 0.25 },
+      pppProjectorConfig: { defaultProjectionType: "kp_test_event", baseFocusWeight: 0.1 }
+  };
 
   beforeEachKP(() => {
-    const config = {
-        schemaGraphConfig: {},
-        focusOptimizerConfig: {},
-        thoughtBufferConfig: { maxSize: 10 }
-    };
-    parserator = new KerbelizedParserator(config);
+    // Each test can customize by spreading over baseConfig if needed
+    parserator = new KerbelizedParserator(JSON.parse(JSON.stringify(baseConfig))); // Use deep copy
   });
 
-  itKP('should instantiate with its dependencies', () => {
-    expectKP(parserator.schemaGraph).toBeDefined();
-    expectKP(parserator.focusOptimizer).toBeDefined();
-    expectKP(parserator.thoughtBuffer).toBeDefined();
-    assert(parserator.thoughtBuffer.maxSize === 10, "thoughtBuffer config maxSize mismatch");
+  itKP('should instantiate with detailed custom config', () => {
+    expectKP(parserator.config.operationalMode).toBe("test_mode");
+    expectKP(parserator.config.loggingVerbosity).toBe("debug");
+    expectKP(parserator.logLevel).toBe(1); // "debug" maps to 1
+    expectKP(parserator.schemaGraph.config.initialSchemaDefinition.type).toBe("test_schema_kp");
+    expectKP(parserator.focusOptimizer.config.defaultTemperature).toBe(0.5);
+    expectKP(parserator.thoughtBuffer.config.maxSize).toBe(10);
+    assert(parserator.pppProjector !== undefined, "Internal PPPProjector should be instantiated");
+    expectKP(parserator.pppProjector.config.defaultProjectionType).toBe("kp_test_event");
   });
 
-  itKP('parseWithContext should execute basic flow and return structured data', async () => {
-    const inputData = { text: "test input" };
-    const context = { schema: "test_schema", confidenceThreshold: 0.5 };
+  itKP('parseWithContext should respect enablePPPinjection: false', async () => {
+    const noPPPConfig = { ...baseConfig, enablePPPinjection: false, loggingVerbosity: "none" }; // mute logs for this test
+    parserator = new KerbelizedParserator(noPPPConfig);
 
-    const result = await parserator.parseWithContext(inputData, context);
+    const bufferInitialSize = parserator.thoughtBuffer.getCurrentState().length;
+    await parserator.parseWithContext({ text: "data" }, { schema: "s" });
+    const bufferAfterSize = parserator.thoughtBuffer.getCurrentState().length;
+    expectKP(bufferAfterSize).toBe(bufferInitialSize); // Buffer should not change
+  });
 
-    expectKP(result).toBeDefined();
-    assert(result.data !== undefined, "Result should have data property");
-    assert(result.metadata !== undefined, "Result should have metadata property");
-    assert(result.metadata.focusParams !== undefined, "Result metadata should have focusParams");
-    assert(result.metadata.pppProjectionDetails !== undefined, "Result metadata should have pppProjectionDetails");
-    expectKP(parserator.thoughtBuffer.getCurrentState().length).toBeGreaterThan(0);
+  itKP('parseWithContext should respect enablePPPinjection: true', async () => {
+    // loggingVerbosity is debug from baseConfig, so logs will be verbose
+    const pppConfig = { ...baseConfig, enablePPPinjection: true };
+    parserator = new KerbelizedParserator(pppConfig);
+    const bufferInitialSize = parserator.thoughtBuffer.getCurrentState().length;
+    await parserator.parseWithContext({ text: "data for ppp" }, { schema: "s_ppp" });
+    const bufferAfterSize = parserator.thoughtBuffer.getCurrentState().length;
+    expectKP(bufferAfterSize).toBeGreaterThan(bufferInitialSize);
+  });
+
+  itKP('getCurrentTemperature should use config values', () => {
+     // baseConfig has focusOptimizerConfig: { defaultTemperature: 0.5 }
+     expectKP(parserator.getCurrentTemperature()).toBe(0.5);
+     // Test with context override
+     expectKP(parserator.getCurrentTemperature({targetTemperature: 0.88})).toBe(0.88);
+  });
+
+  itKP('should set logLevel based on loggingVerbosity', () => {
+    parserator = new KerbelizedParserator({ loggingVerbosity: "warn" });
+    expectKP(parserator.logLevel).toBe(3); // "warn" maps to 3
+    parserator = new KerbelizedParserator({ loggingVerbosity: "error" });
+    expectKP(parserator.logLevel).toBe(4);
+     parserator = new KerbelizedParserator({ loggingVerbosity: "none" }); // Assuming LOG_LEVELS has "none"
+    expectKP(parserator.logLevel).toBe(5);
   });
 });

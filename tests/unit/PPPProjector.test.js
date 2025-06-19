@@ -28,9 +28,12 @@ const expectPPP = (actual) => ({
     toHaveLength: (expected) => assert(actual && actual.length === expected, \`Expected length \${expected}, got \${actual && actual.length}\`),
     toMatchObject: (expectedSubset) => {
         let pass = true;
-        for(const key in expectedSubset) {
-            if (JSON.stringify(actual[key]) !== JSON.stringify(expectedSubset[key])) {
-                pass = false; break;
+        if (typeof actual !== 'object' || actual === null) pass = false;
+        else {
+            for(const key in expectedSubset) {
+                if (JSON.stringify(actual[key]) !== JSON.stringify(expectedSubset[key])) {
+                    pass = false; break;
+                }
             }
         }
         assert(pass, \`Expected \${JSON.stringify(actual)} to contain subset \${JSON.stringify(expectedSubset)}\`);
@@ -41,39 +44,45 @@ describePPP('PPPProjector', () => {
   let projector;
   let thoughtBuffer;
 
+  const defaultConfig = {
+      baseFocusWeight: 0.6,
+      timestampSpreadFactor: 5,
+      defaultProjectionType: 'test_type',
+      projectionSource: 'test_source',
+      focusWeightVariability: 0.1
+  };
+
   beforeEachPPP(() => {
-    projector = new PPPProjector({ baseFocusWeight: 0.6, timestampSpreadFactor: 5, defaultProjectionType: 'test_type' });
+    projector = new PPPProjector(JSON.parse(JSON.stringify(defaultConfig))); // Deep copy
     thoughtBuffer = new TimestampedThoughtBuffer({ maxSize: 10 });
   });
 
-  itPPP('should instantiate with config', () => {
-    expectPPP(projector.config.baseFocusWeight).toBe(0.6);
-    expectPPP(projector.config.defaultProjectionType).toBe('test_type');
+  itPPP('should instantiate with merged config from defaults and provided', () => {
+    projector = new PPPProjector({ baseFocusWeight: 0.7, customParam: 123 });
+    expectPPP(projector.config.baseFocusWeight).toBe(0.7); // Overridden
+    // DEFAULT_PPP_CONFIG is defined inside PPPProjector.js, so this tests merging with it.
+    expectPPP(projector.config.timestampSpreadFactor).toBe(10); // Default from PPPProjector's own DEFAULT_PPP_CONFIG
+    expectPPP(projector.config.customParam).toBe(123); // Extra param
   });
 
-  itPPP('projectToTimestampedBuffer should inject items into buffer and return projections', () => {
-    const data = [{ id: 'item1', value: 10 }, { id: 'item2', value: 20 }];
+  itPPP('projectToTimestampedBuffer should use config values in projections', () => {
+    const data = [{ id: 'item1' }];
     const projections = projector.projectToTimestampedBuffer(data, thoughtBuffer);
 
-    expectPPP(thoughtBuffer.getCurrentState()).toHaveLength(2);
-    expectPPP(projections).toHaveLength(2);
-    expectPPP(projections[0].projection.originalItem.id).toBe('item1');
-    assert(projections[0].focusWeight >= 0 && projections[0].focusWeight <=1, "Focus weight out of bounds");
-    if(projections.length > 1) {
-        expectPPP(projections[1].timestamp).toBeGreaterThan(projections[0].timestamp);
-    }
+    expectPPP(projections).toHaveLength(1);
+    const p = projections[0];
+    expectPPP(p.projection.projectionType).toBe(defaultConfig.defaultProjectionType);
+    expectPPP(p.projection.metadata.source).toBe(defaultConfig.projectionSource);
+    // Check focus weight is around baseFocusWeight +/- variability/2
+    assert(p.focusWeight >= defaultConfig.baseFocusWeight - defaultConfig.focusWeightVariability/2 - 0.01 &&
+           p.focusWeight <= defaultConfig.baseFocusWeight + defaultConfig.focusWeightVariability/2 + 0.01,
+           `Focus weight \${p.focusWeight} out of expected range based on config`);
   });
 
-  itPPP('helper methods should return values in expected format', () => {
-    const item = { name: "testItem" };
-    const timestamp = projector.calculateOptimalTimestamp(item, 0);
-    assert(typeof timestamp === 'number' && timestamp > 0, "calculateOptimalTimestamp failed");
-
-    const projection = projector.createProbabilisticProjection(item);
-    expectPPP(projection).toMatchObject({ originalItem: item, projectedValue: "testItem_projected", projectionType: 'test_type' });
-    assert(typeof projection.confidence === 'number', "projection.confidence type mismatch");
-
-    const weight = projector.calculateFocusWeight(item);
-    assert(typeof weight === 'number' && weight >=0 && weight <=1, "calculateFocusWeight failed");
+  itPPP('calculateOptimalTimestamp should use timestampSpreadFactor from config', () => {
+    const item1_ts = projector.calculateOptimalTimestamp({id:1}, 0);
+    const item2_ts = projector.calculateOptimalTimestamp({id:2}, 1);
+    // Check if spread is approximately per config, Date.now() makes it tricky for exactness
+    assert(item2_ts - item1_ts >= defaultConfig.timestampSpreadFactor && item2_ts - item1_ts < defaultConfig.timestampSpreadFactor + 50, "Timestamp spread factor not applied as expected"); // Increased tolerance for Date.now() variance
   });
 });

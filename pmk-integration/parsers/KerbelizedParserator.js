@@ -1,110 +1,190 @@
 import { AdaptiveSchemaGraph } from '../schemas/AdaptiveSchemaGraph.js';
 import { BayesianFocusOptimizer } from '../optimizers/BayesianFocusOptimizer.js';
 import { TimestampedThoughtBuffer } from '../optimizers/TimestampedThoughtBuffer.js';
-// import { PPPProjector } from './PPPProjector.js'; // Not used directly if projectToPPP is internal
+import { PPPProjector } from './PPPProjector.js'; // Import PPPProjector
+
+const DEFAULT_KP_CONFIG = {
+  operationalMode: "standard_parsing",
+  defaultParsingDepth: 5,
+  enablePPPinjection: true,
+  loggingVerbosity: "info", // debug, info, warn, error
+  schemaGraphConfig: {},
+  focusOptimizerConfig: {},
+  thoughtBufferConfig: {},
+  pppProjectorConfig: {} // Default config for internal PPPProjector
+};
+
+const LOG_LEVELS = { "debug": 1, "info": 2, "warn": 3, "error": 4, "none": 5 };
 
 export class KerbelizedParserator {
   constructor(config = {}) {
-    this.schemaGraph = new AdaptiveSchemaGraph(config.schemaGraphConfig);
-    this.focusOptimizer = new BayesianFocusOptimizer(config.focusOptimizerConfig);
-    this.thoughtBuffer = new TimestampedThoughtBuffer(config.thoughtBufferConfig);
-    // this.pppProjector = new PPPProjector(config.pppProjectorConfig); // If using separate projector
+    // Deep merge for nested configs might be more robust with a utility
+    this.config = {
+        ...DEFAULT_KP_CONFIG,
+        ...config,
+        schemaGraphConfig: { ...DEFAULT_KP_CONFIG.schemaGraphConfig, ...(config.schemaGraphConfig || {}) },
+        focusOptimizerConfig: { ...DEFAULT_KP_CONFIG.focusOptimizerConfig, ...(config.focusOptimizerConfig || {}) },
+        thoughtBufferConfig: { ...DEFAULT_KP_CONFIG.thoughtBufferConfig, ...(config.thoughtBufferConfig || {}) },
+        pppProjectorConfig: { ...DEFAULT_KP_CONFIG.pppProjectorConfig, ...(config.pppProjectorConfig || {}) }
+    };
 
-    console.log("KerbelizedParserator initialized with dependencies.");
+    this.logLevel = LOG_LEVELS[this.config.loggingVerbosity.toLowerCase()] || LOG_LEVELS["info"];
+
+    this.schemaGraph = new AdaptiveSchemaGraph(this.config.schemaGraphConfig);
+    this.focusOptimizer = new BayesianFocusOptimizer(this.config.focusOptimizerConfig);
+    this.thoughtBuffer = new TimestampedThoughtBuffer(this.config.thoughtBufferConfig);
+
+    if (this.config.pppProjectorConfig && Object.keys(this.config.pppProjectorConfig).length > 0) { // Instantiate if config is not empty
+        this.pppProjector = new PPPProjector(this.config.pppProjectorConfig);
+        this._log("info", "KerbelizedParserator: Internal PPPProjector instantiated.");
+    } else {
+        this._log("info", "KerbelizedParserator: Internal PPPProjector not configured or config is empty.");
+    }
+
+    this._log("info", `KerbelizedParserator initialized. Mode: ${this.config.operationalMode}, Logging: ${this.config.loggingVerbosity}`);
+  }
+
+  _log(level, ...args) {
+    if (LOG_LEVELS[level] >= this.logLevel) {
+      console.log(`[KP][${level.toUpperCase()}]`, ...args);
+    }
   }
 
   async parseWithContext(input, context) {
-    console.log("KerbelizedParserator.parseWithContext called with input:", input, "context:", context);
+    this._log("info", "parseWithContext called. Input keys:", Object.keys(input || {}), "Context keys:", Object.keys(context || {}));
+    this._log("debug", `Operational Mode: ${this.config.operationalMode}, Default Parsing Depth: ${this.config.defaultParsingDepth}`);
 
-    const pppProjection = await this.projectToPPP(context);
+    let pppProjection = { relevanceScore: 0, projectedData: context, detail: "no_ppp_fallback" };
 
-    // Simulate injecting projections into thought buffer
-    const injectionPoints = this.findOptimalInjectionPoints(pppProjection);
-    injectionPoints.forEach(point => {
-        this.thoughtBuffer.inject(point.timestamp, point.pointData, pppProjection.relevanceScore);
-    });
-    console.log("KerbelizedParserator: Injected data into thought buffer at points:", injectionPoints);
+    if (this.config.enablePPPinjection) {
+      this._log("debug", "PPP Injection enabled.");
+      pppProjection = await this.projectToPPP(context);
+
+      const injectionPoints = this.findOptimalInjectionPoints(pppProjection);
+      if (injectionPoints && injectionPoints.length > 0) {
+        injectionPoints.forEach(point => {
+            this.thoughtBuffer.inject(point.timestamp, point.pointData, pppProjection.relevanceScore);
+        });
+        this._log("info", `Injected ${injectionPoints.length} data point(s) into thought buffer.`);
+      } else {
+        this._log("debug", "No injection points found or pppProjection was empty.");
+      }
+      this._log("debug", "Thought buffer state size:", this.thoughtBuffer.getCurrentState ? this.thoughtBuffer.getCurrentState().length : "N/A");
+    } else {
+      this._log("info", "PPP Injection disabled by configuration.");
+    }
 
     const focusParamsInput = {
-      temperature: this.getCurrentTemperature(), // Could come from context or internal state
-      abstractionWeight: this.getAbstractionWeights(), // Could come from context or internal state
+      temperature: this.getCurrentTemperature(context),
+      abstractionWeight: this.getAbstractionWeights(context),
       contextualRelevance: pppProjection.relevanceScore,
-      // Potentially add more context from the input or pppProjection
-      currentPerformance: context.currentPerformanceMetrics, // Example: if context provides this
-      computationalCost: input ? JSON.stringify(input).length : 0 // Example metric
+      currentPerformance: context.currentPerformanceMetrics, // Might be undefined, optimizer should handle
+      computationalCost: input ? JSON.stringify(input).length : 0,
+      // Pass optimizer specific config if available from main config
+      ...(this.config.focusOptimizerConfig.defaultParams || {})
     };
+    this._log("debug", "Optimizing focus with params:", focusParamsInput);
     const focusParams = await this.focusOptimizer.optimize(focusParamsInput);
-    console.log("KerbelizedParserator: Focus params optimized:", focusParams);
+    this._log("info", "Focus params optimized:", focusParams);
 
     return this.executeAdaptiveParsing(input, focusParams, pppProjection);
   }
 
   async projectToPPP(context) {
-    // In a real scenario, this might call this.pppProjector.project(context)
-    console.log("KerbelizedParserator (internal).projectToPPP called with context:", context);
-    // Simulate some processing based on context
-    const projectedData = { originalContext: context, processed: `projected_${context.schema || 'generic'}` };
-    return {
-        relevanceScore: context.confidenceThreshold || 0.6, // Example
-        projectedData: projectedData,
-        detail: "placeholder PPP projection"
-    };
+    if (this.pppProjector) {
+      this._log("debug", "Using internal PPPProjector for projectToPPP.");
+      // This assumes PPPProjector can project a 'context' object.
+      // Let's adapt to its existing `createProbabilisticProjection` for a single item.
+      const itemToProject = { type: "full_context", data: context };
+      const projectionResult = this.pppProjector.createProbabilisticProjection(itemToProject);
+      return {
+          relevanceScore: projectionResult.confidence || 0.5, // PPPProjector uses 'confidence'
+          projectedData: projectionResult.projectedValue,
+          detail: `Projection from internal PPPProjector (type: ${projectionResult.projectionType})`
+      };
+    } else {
+      this._log("debug", "Internal PPPProjector not available/configured, using basic internal projection logic.");
+      const projectedData = { originalContext: context, processed: `projected_${context.schema || 'generic'}` };
+      return {
+          relevanceScore: context.confidenceThreshold || 0.6,
+          projectedData: projectedData,
+          detail: "basic_internal_ppp_projection"
+      };
+    }
   }
 
   findOptimalInjectionPoints(pppProjection) {
-    // Simple placeholder: inject one point now.
-    // A real implementation would calculate optimal points based on buffer state, projection, etc.
-    console.log("KerbelizedParserator.findOptimalInjectionPoints for projection:", pppProjection);
+    this._log("debug", "findOptimalInjectionPoints for projection:", pppProjection.detail);
+    if (!pppProjection || !pppProjection.projectedData) {
+        this._log("warn", "Cannot find injection points for empty or invalid pppProjection.");
+        return [];
+    }
     return [
         { timestamp: Date.now(), pointData: pppProjection.projectedData }
     ];
   }
 
-  getCurrentTemperature() {
-    // Could be dynamic based on state or config
-    return 0.75;
+  getCurrentTemperature(context = {}) {
+    let temp = context.targetTemperature;
+    if (temp === undefined && this.config.focusOptimizerConfig) {
+      temp = this.config.focusOptimizerConfig.defaultTemperature; // Check for a direct default
+      if (temp === undefined && this.config.focusOptimizerConfig.parameterBounds && this.config.focusOptimizerConfig.parameterBounds.temperature) {
+        const bounds = this.config.focusOptimizerConfig.parameterBounds.temperature;
+        temp = (bounds[0] + bounds[1]) / 2; // Midpoint of bounds
+      }
+    }
+    temp = temp !== undefined ? temp : 0.75; // Fallback if no config found
+    this._log("debug", `getCurrentTemperature returning: ${temp}`);
+    return temp;
   }
 
-  getAbstractionWeights() {
-    // Could be dynamic
-    return 0.55;
+  getAbstractionWeights(context = {}) {
+    let weight = context.targetAbstractionWeight;
+    if (weight === undefined && this.config.focusOptimizerConfig) {
+      weight = this.config.focusOptimizerConfig.defaultAbstractionWeight; // Check for a direct default
+      if (weight === undefined && this.config.focusOptimizerConfig.parameterBounds && this.config.focusOptimizerConfig.parameterBounds.abstractionWeight) {
+        const bounds = this.config.focusOptimizerConfig.parameterBounds.abstractionWeight;
+        weight = (bounds[0] + bounds[1]) / 2; // Midpoint of bounds
+      }
+    }
+    weight = weight !== undefined ? weight : 0.55; // Fallback if no config found
+    this._log("debug", `getAbstractionWeights returning: ${weight}`);
+    return weight;
   }
 
   async executeAdaptiveParsing(input, focusParams, pppProjection) {
-    console.log("KerbelizedParserator.executeAdaptiveParsing. Input:", input, "FocusParams:", focusParams);
+    this._log("info", "executeAdaptiveParsing. Input keys:", Object.keys(input || {}), "FocusParam keys:", Object.keys(focusParams || {}));
+    const maxIter = (focusParams && focusParams.maxIterations) || this.config.defaultParsingDepth;
+    this._log("debug", `Max parsing iterations: ${maxIter}`);
 
-    const currentSchema = await this.schemaGraph.getRootSchema(); // Get initial/current schema
-    console.log("KerbelizedParserator: Current schema for parsing:", currentSchema);
+    const currentSchema = await this.schemaGraph.getRootSchema();
+    this._log("debug", "Current schema for parsing:", currentSchema ? currentSchema.type : "N/A");
 
-    // Placeholder for actual parsing logic using the schema and input
     const simulatedParsingOutput = {
-        parsedContent: { ...input }, // Echo input for now
+        parsedContent: { ...input },
         quality: Math.random(),
-        stepsTaken: currentSchema.extractionSteps ? currentSchema.extractionSteps.length : 0
+        stepsTaken: currentSchema && currentSchema.extractionSteps ? currentSchema.extractionSteps.length : 0
     };
-    console.log("KerbelizedParserator: Simulated parsing output:", simulatedParsingOutput);
+    this._log("debug", "Simulated parsing output quality:", simulatedParsingOutput.quality);
 
-    // Adapt schema based on parsing result (even if simplified)
     const adaptedSchema = await this.schemaGraph.adaptSchema(currentSchema, {
         input: input,
         parsingOutput: simulatedParsingOutput,
         focusParams: focusParams
     });
-    console.log("KerbelizedParserator: Schema after adaptation attempt:", adaptedSchema);
+    this._log("debug", "Schema after adaptation attempt. New type (if changed):", adaptedSchema ? adaptedSchema.type : "N/A");
 
     return {
       data: simulatedParsingOutput.parsedContent,
-      confidence: simulatedParsingOutput.quality * (focusParams.temperature || 0.7), // Example calculation
-      iterations: 1, // Placeholder, could be from parsing loop
-      schemaVersion: adaptedSchema.version || '1.0', // If schema has versions
+      confidence: simulatedParsingOutput.quality * (focusParams.temperature || 0.7),
+      iterations: maxIter, // Reporting the "max" iterations for now
+      schemaVersion: adaptedSchema.version || (currentSchema ? currentSchema.version : '1.0') || '1.0',
       metadata: {
         focusParams,
-        pppProjectionDetails: pppProjection, // Keep original projection details
+        pppProjectionDetails: pppProjection,
         originalInput: input,
-        contextUsed: pppProjection.projectedData.originalContext
+        contextUsed: pppProjection.projectedData && pppProjection.projectedData.originalContext ? pppProjection.projectedData.originalContext : pppProjection.projectedData
       }
     };
   }
 }
-// Ensure export statement is present
-// export { KerbelizedParserator }; // Already there in existing file
