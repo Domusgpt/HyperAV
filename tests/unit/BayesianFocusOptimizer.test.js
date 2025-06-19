@@ -105,12 +105,13 @@ describeBFO('BayesianFocusOptimizer - Adaptive Logic', () => {
         });
         // Goal: maximize_accuracy, current perf is very low, current temp is 0.25 (mid-bound)
         // Expected: suggest temp -= 0.05 -> 0.20. Then clamp to 0.2.
-        const resultLow = await optimizer.optimize({ optimizationGoal: "maximize_accuracy", temperature: 0.25, abstractionWeight: 0.45, currentPerformance: 0.1 });
+        const resultLow = await optimizer.optimize({ optimizationGoal: "maximize_accuracy", temperature: 0.25, abstractionWeight: 0.45, currentPerformance: 0.1 }); // Removed goal from params
         expectBFO(resultLow.temperature).toBe(0.2);
 
         // Goal: minimize_latency, current cost is very high, current temp is 0.25 (mid-bound)
         // Expected: suggest temp += 0.05 -> 0.30. Then clamp to 0.3.
-        const resultHigh = await optimizer.optimize({ optimizationGoal: "minimize_latency", temperature: 0.25, abstractionWeight: 0.45, currentPerformance: 0.8, computationalCost: 2000 });
+         optimizer.config.optimizationGoal = "minimize_latency"; // Change goal for this part
+        const resultHigh = await optimizer.optimize({ temperature: 0.25, abstractionWeight: 0.45, currentPerformance: 0.8, computationalCost: 2000 });
         expectBFO(resultHigh.temperature).toBe(0.3);
     });
 });

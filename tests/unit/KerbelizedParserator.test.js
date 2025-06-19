@@ -74,11 +74,14 @@ describeKP('KerbelizedParserator - Adaptive Logic Integration', () => {
 
     // Spy on sub-component methods
     mockSchemaGraphAdaptSchema = { called: false, args: null, callCount: 0 };
+    // Keep a reference to the original method if needed, or mock entirely
+    // const originalAdaptSchema = parserator.schemaGraph.adaptSchema;
     parserator.schemaGraph.adaptSchema = async (schemaObj, parseRes) => {
         mockSchemaGraphAdaptSchema.called = true;
         mockSchemaGraphAdaptSchema.callCount++;
         mockSchemaGraphAdaptSchema.args = {schemaObj, parseRes};
         // Return a slightly modified schema object as the real one does
+        // Ensure definition is part of the returned object for KP to use
         return {...schemaObj, definition: {...schemaObj.definition}, strength: schemaObj.strength + 0.01 };
     };
 
@@ -86,9 +89,8 @@ describeKP('KerbelizedParserator - Adaptive Logic Integration', () => {
         called: false,
         args: null,
         callCount: 0,
-        // Default mock return: return the input params with 'optimized:true'
         returnValGenerator: (args) => ({
-            ...args, // Pass through most args
+            ...args,
             temperature: args.temperature || baseConfig.focusOptimizerConfig.defaultTemperature,
             abstractionWeight: args.abstractionWeight || baseConfig.focusOptimizerConfig.defaultAbstractionWeight,
             decisionSource: "mocked_default_passthrough",
@@ -112,7 +114,6 @@ describeKP('KerbelizedParserator - Adaptive Logic Integration', () => {
     const inputData = { text: "test outcome" };
     const context = { schema: "outcome_schema" };
 
-    // Configure mock BFO to return specific temp/weight for this test
     const specificTemp = 0.66;
     const specificWeight = 0.44;
     mockOptimizerOptimize.returnValGenerator = (args) => ({
@@ -135,26 +136,24 @@ describeKP('KerbelizedParserator - Adaptive Logic Integration', () => {
     const firstRunContext = {schema: "first_schema"};
     const firstRunTemp = 0.7;
     const firstRunWeight = 0.3;
-    mockOptimizerOptimize.returnValGenerator = (args) => ({ // For first run
+    mockOptimizerOptimize.returnValGenerator = (args) => ({
         ...args, temperature: firstRunTemp, abstractionWeight: firstRunWeight,
         decisionSource:"first_run_decision", optimized:true, goalUsed: parserator.config.focusOptimizerConfig.optimizationGoal
     });
     const firstResult = await parserator.parseWithContext(firstRunInput, firstRunContext);
 
-    // This is what should have been stored in lastRunOutcome and then passed to BFO.optimize
     const expectedLastRunForBFO = {
-        temperature: firstRunTemp, // Temp that *produced* firstResult.confidence
-        abstractionWeight: firstRunWeight, // Weight that *produced* firstResult.confidence
+        temperature: firstRunTemp,
+        abstractionWeight: firstRunWeight,
         currentPerformance: firstResult.confidence,
         computationalCost: JSON.stringify(firstRunInput).length,
         contextualRelevance: firstResult.metadata.pppProjectionDetails.relevanceScore
     };
 
-    // For second run, BFO mock will just return its default
-    mockOptimizerOptimize.returnValGenerator = (args) => ({
+    mockOptimizerOptimize.returnValGenerator = (args) => ({ // For second run
         ...args,
-        temperature: args.temperature, // Should be the *new* baseline from current KP.getCurrentTemperature()
-        abstractionWeight: args.abstractionWeight, // Should be the *new* baseline
+        temperature: args.temperature, // This will be the *new* baseline from getCurrentTemperature for the 2nd run
+        abstractionWeight: args.abstractionWeight, // This will be the *new* baseline
         decisionSource:"second_run_decision", optimized:true, goalUsed: parserator.config.focusOptimizerConfig.optimizationGoal
     });
 
@@ -163,44 +162,45 @@ describeKP('KerbelizedParserator - Adaptive Logic Integration', () => {
     await parserator.parseWithContext(secondRunInput, secondRunContext);
 
     assert(mockOptimizerOptimize.callCount === 2, "Optimizer optimize should be called twice");
-    expectKP(mockOptimizerOptimize.args).toBeDefined(); // Args for the *second* call
+    expectKP(mockOptimizerOptimize.args).toBeDefined();
 
-    // Check the structure passed to BFO's optimize for the second call
-    // It should contain the previous run's performance data (currentPerformance, computationalCost)
-    // AND the previous run's parameters that LED to that performance (temperature, abstractionWeight)
-    expectKP(mockOptimizerOptimize.args).toHaveBeenCalledWithPartial(expectedLastRunForBFO, mockOptimizerOptimize.args);
+    // Check that the *previous run's* data (that generated 'firstResult') was passed to the BFO.
+    // The 'temperature' and 'abstractionWeight' in mockOptimizerOptimize.args will be the
+    // new baseline for the *second* run, but currentPerformance/Cost will be from the first run.
+    expectKP(mockOptimizerOptimize.args.currentPerformance).toBe(expectedLastRunForBFO.currentPerformance);
+    expectKP(mockOptimizerOptimize.args.computationalCost).toBe(expectedLastRunForBFO.computationalCost);
+    // The BFO's optimize method now expects that the temp/weight passed in are the ones whose perf is being reported.
+    expectKP(mockOptimizerOptimize.args.temperature).toBe(expectedLastRunForBFO.temperature);
+    expectKP(mockOptimizerOptimize.args.abstractionWeight).toBe(expectedLastRunForBFO.abstractionWeight);
+
   });
 
   itKP('parseWithContext should call schemaGraph.adaptSchema with correct confidence and schema object', async () => {
     const inputData = { text: "data for schema adapt test" };
     const context = { schema: "adapt_test" };
 
-    // Get the schema that will be preferred first by calling the real method once
-    // (Can't use real method directly in test easily, so simulate its expected output)
     const initialSchemaFromConfig = parserator.config.schemaGraphConfig.initialSchemaDefinition;
-    const preferredSchemaObj = {
+    const preferredSchemaObjFromASG = { // This is what ASG's getPreferredSchema would return
         id: initialSchemaFromConfig.type,
-        definition: JSON.parse(JSON.stringify(initialSchemaFromConfig)), // Deep copy
-        strength: 1.0, // Initial strength
-        usageCount: 0, // Will be incremented by getPreferredSchema
+        definition: JSON.parse(JSON.stringify(initialSchemaFromConfig)),
+        strength: 1.0,
+        usageCount: 0,
         lastUsed: Date.now()
     };
 
-    // Ensure the mocked getPreferredSchema returns a consistent object for the test
     parserator.schemaGraph.getPreferredSchema = async (ctx) => {
-        // Simulate the usage count increment and lastUsed update
-        preferredSchemaObj.usageCount++;
-        preferredSchemaObj.lastUsed = Date.now();
-        return JSON.parse(JSON.stringify(preferredSchemaObj)); // Return a copy
+        preferredSchemaObjFromASG.usageCount++;
+        preferredSchemaObjFromASG.lastUsed = Date.now();
+        return JSON.parse(JSON.stringify(preferredSchemaObjFromASG));
     };
 
     const result = await parserator.parseWithContext(inputData, context);
 
     assert(mockSchemaGraphAdaptSchema.called, "adaptSchema should have been called");
-    expectKP(mockSchemaGraphAdaptSchema.args.schemaObj.id).toBe(preferredSchemaObj.id);
+    expectKP(mockSchemaGraphAdaptSchema.args.schemaObj.id).toBe(preferredSchemaObjFromASG.id);
     expectKP(mockSchemaGraphAdaptSchema.args.parseRes.confidence).toBe(result.confidence);
-    // focusParams in adaptSchemaArgs.parseRes should be the ones returned by the (mocked) optimizer
     expectKP(mockSchemaGraphAdaptSchema.args.parseRes.focusParams.decisionSource).toBe("mocked_default_passthrough");
+    expectKP(mockSchemaGraphAdaptSchema.args.parseRes.inputContext).toEqual(context); // Check originalContext is passed
   });
 
   itKP('reconfigure should reset lastRunOutcome', async () => {

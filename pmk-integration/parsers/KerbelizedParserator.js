@@ -116,37 +116,12 @@ export class KerbelizedParserator {
     const baseTemp = this.getCurrentTemperature(context);
     const baseWeight = this.getAbstractionWeights(context);
 
-    // Construct focusParamsInput for BayesianFocusOptimizer
-    // It includes the parameters that *would* be used (baseTemp, baseWeight)
-    // and the outcome of the *previous* run (this.lastRunOutcome)
     const focusParamsInput = {
-      temperature: baseTemp,
-      abstractionWeight: baseWeight,
       contextualRelevance: pppProjection.relevanceScore,
-      // Pass previous run's outcome, which includes its own temp, weight, performance, cost
-      // BFO's optimize() expects: currentPerformance, computationalCost for the *previous* run that used these specific temp/weight.
-      // So, if lastRunOutcome exists, we use its metrics but also pass the temp/weight that *led* to them.
       currentPerformance: this.lastRunOutcome ? this.lastRunOutcome.performance : undefined,
       computationalCost: this.lastRunOutcome ? this.lastRunOutcome.cost : undefined,
-      // The temp/weight in focusParamsInput are the *current* baselines,
-      // but BFO needs to associate lastRunOutcome's perf/cost with lastRunOutcome's temp/weight.
-      // This is now handled inside BFO by expecting 'temperature' and 'abstractionWeight' in currentContextParams
-      // to be the ones whose outcome is being reported as 'currentPerformance' and 'computationalCost'.
-      // So, we should pass the *previous* temp/weight if we are reporting on *their* performance.
-      // Let's adjust: focusParamsInput should represent the parameters whose performance is being reported.
-      // If there's a lastRunOutcome, we report on *its* parameters.
-      // If not, we report on current baseline params (with undefined performance).
-      ...(this.lastRunOutcome ? {
-            temperature: this.lastRunOutcome.temp,
-            abstractionWeight: this.lastRunOutcome.weight,
-            // currentPerformance & computationalCost already assigned above
-        } : {
-            // No previous run, so current baseline temp/weight are effectively what we are "testing"
-            // with an unknown performance.
-            temperature: baseTemp,
-            abstractionWeight: baseWeight,
-            // currentPerformance & computationalCost will be undefined here
-        }),
+      temperature: this.lastRunOutcome ? this.lastRunOutcome.temp : baseTemp,
+      abstractionWeight: this.lastRunOutcome ? this.lastRunOutcome.weight : baseWeight,
       ...(this.config.focusOptimizerConfig.defaultParams || {})
     };
 
@@ -154,16 +129,14 @@ export class KerbelizedParserator {
     const optimizedFocusParams = await this.focusOptimizer.optimize(focusParamsInput);
     this._log("info", "Focus params optimized by BFO:", optimizedFocusParams);
 
-    // Use optimizedFocusParams for the actual parsing execution
     const result = await this.executeAdaptiveParsing(input, optimizedFocusParams, pppProjection, context);
 
-    // Update lastRunOutcome for the NEXT call to optimize
     this.lastRunOutcome = {
-        temp: optimizedFocusParams.temperature, // The temp that was actually USED for this run
-        weight: optimizedFocusParams.abstractionWeight, // The weight that was actually USED for this run
+        temp: optimizedFocusParams.temperature,
+        weight: optimizedFocusParams.abstractionWeight,
         performance: result.confidence,
         cost: input ? JSON.stringify(input).length : 0,
-        contextualRelevance: pppProjection.relevanceScore // Capture context of this run
+        contextualRelevance: pppProjection.relevanceScore
     };
     this._log("debug", "Updated lastRunOutcome for next cycle:", this.lastRunOutcome);
 
@@ -171,15 +144,27 @@ export class KerbelizedParserator {
   }
 
   async executeAdaptiveParsing(input, currentFocusParams, pppProjection, originalContext) {
-    this._log("info", "executeAdaptiveParsing. Input keys:", Object.keys(input || {}), "FocusParams:", currentFocusParams);
+    this._log("info", "executeAdaptiveParsing. Input keys:", Object.keys(input || {}), "FocusParams:", currentFocusParams, "OriginalContext:", originalContext);
     const maxIter = (currentFocusParams && currentFocusParams.maxIterations) || this.config.defaultParsingDepth;
 
     const schemaObjectToUse = await this.schemaGraph.getPreferredSchema(originalContext);
-    this._log("debug", "Preferred schema for parsing:", schemaObjectToUse ? schemaObjectToUse.id : "N/A");
+    this._log("debug", `Preferred schema selected by ASG: ID='${schemaObjectToUse ? schemaObjectToUse.id : "N/A"}', Strength=${schemaObjectToUse ? schemaObjectToUse.strength.toFixed(3) : "N/A"}`);
 
     if (!schemaObjectToUse || !schemaObjectToUse.definition) {
-        this._log("error", "No valid schema object could be retrieved for parsing.");
-        return { data: input, confidence: 0.01, iterations: 0, schemaVersion: 'error_no_schema', metadata: {focusParams: currentFocusParams, pppProjectionDetails: pppProjection, originalInput: input}};
+        this._log("error", "No valid schema object could be retrieved for parsing by ASG.");
+        return {
+            data: input,
+            confidence: 0.01,
+            iterations: 0,
+            schemaVersion: 'error_no_schema',
+            metadata: {
+                focusParams: currentFocusParams,
+                pppProjectionDetails: pppProjection,
+                originalInput: input,
+                contextUsed: originalContext,
+                schemaIdUsed: "N/A"
+            }
+        };
     }
     const currentSchemaDef = schemaObjectToUse.definition;
 
@@ -193,12 +178,13 @@ export class KerbelizedParserator {
 
     const adaptSchemaParseResult = {
         input: input,
+        inputContext: originalContext, // Pass the original context here
         parsingOutput: simulatedParsingOutput,
         focusParams: currentFocusParams,
         confidence: finalConfidence
     };
     const adaptedSchemaObject = await this.schemaGraph.adaptSchema(schemaObjectToUse, adaptSchemaParseResult);
-    this._log("debug", "Schema after adaptation attempt. New strength:", adaptedSchemaObject ? adaptedSchemaObject.strength.toFixed(4) : "N/A");
+    this._log("debug", `Schema after adaptation attempt by ASG: ID='${adaptedSchemaObject ? adaptedSchemaObject.id : "N/A"}', New Strength=${adaptedSchemaObject ? adaptedSchemaObject.strength.toFixed(4) : "N/A"}`);
 
     return {
       data: simulatedParsingOutput.parsedContent,
@@ -215,7 +201,6 @@ export class KerbelizedParserator {
     };
   }
 
-  // ... (projectToPPP, findOptimalInjectionPoints, getCurrentTemperature, getAbstractionWeights are unchanged from previous step) ...
   async projectToPPP(context) {
     if (this.pppProjector) {
       this._log("debug", "Using internal PPPProjector for projectToPPP.");
