@@ -13,6 +13,23 @@ The visualizer's parameters are intended to be **machine-settable controls**, al
 *   **Direct Data Channel Mapping:** Designed to receive data streams (e.g., from PMK/ASI `dataChannels` or `PMKData` objects) that directly drive visual properties like morphing, rotation, color, and line characteristics, providing clear feedback on agent-observed states.
 *   **Headless Operation:** Optimized for integration as a module without a direct human-operated UI. A canvas output can be used for debugging, monitoring agent states, or generating visual outputs programmatically.
 
+### Project Context and Vision
+
+To fully understand the purpose and direction of this Visualization Kernel, it's helpful to see its place within a larger hierarchy of concepts:
+
+*   **Dimensia:** This represents a long-term, aspirational research vision. It explores the theoretical potential of extremely high-dimensional (approaching "infinite-dimensional") data representation and cognitive models. Dimensia is the "why" that inspires the more concrete projects below, pushing the boundaries of how complex information can be structured and understood.
+
+*   **MVEP (Multimodal Visualization Enhancement Protocol):** MVEP is a broader conceptual framework and protocol designed for machine-optimized visual encoding. It aims to define how AI systems can dynamically choose and configure visualizations to best suit the data's nature, the task at hand, and the system's own internal state. The Visualization Kernel is a foundational engine that implements key aspects of MVEP.
+
+*   **Visualization Kernel (This Project):** This repository contains the **Visualization Kernel**, which is the core focus here. It is a headless, API-driven WebGL2 module specifically engineered for N-dimensional polytope visualization. Its primary role is to serve as a highly configurable visual component for advanced AI agentic systems, allowing them to represent complex data topologies and internal states dynamically.
+
+*   **Parserator (PMK/ASI):** The **Parserator** is the primary example of an AI agentic system that the Visualization Kernel is designed to integrate with. Parserator is a sophisticated data parsing and interpretation system.
+    *   **Parserator Micro-Kernel (PMK):** The core engine of the Parserator.
+    *   **Adaptive Schema Intelligence (ASI):** A component of Parserator that dynamically adapts data schemas and understanding.
+    The Visualization Kernel provides a "visual output" or "representational layer" for the PMK/ASI, enabling the agent to "see" or display its understanding of data structures, its confidence, or its focus.
+
+In essence, Dimensia provides the far-reaching vision, MVEP provides the protocol and encoding strategies, the Visualization Kernel provides the core rendering engine, and Parserator (PMK/ASI) is the primary client agent that utilizes this engine.
+
 ## Integration Principles
 
 This visualizer serves as a component to be controlled by an external agent or system.
