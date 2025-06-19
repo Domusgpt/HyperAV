@@ -20,22 +20,17 @@ export class KerbelizedParserator {
   constructor(config = {}) {
     this._initializeConfig(config);
     this._initializeComponents();
+    this.lastRunOutcome = null; // For optimizer feedback
     this._log("info", `KerbelizedParserator initialized. Mode: ${this.config.operationalMode}, Logging: ${this.config.loggingVerbosity}`);
   }
 
   _initializeConfig(newConfig = {}) {
-    // Helper to set or update config, used by constructor and reconfigure
-    const baseConfig = this.config || DEFAULT_KP_CONFIG; // Use current config if exists, else default
-
-    // Start with a fresh default base to ensure all default fields are present
-    // then layer existing config (if any, from this.config), then layer newConfig.
     const mergedConfig = {
         ...DEFAULT_KP_CONFIG,
-        ...(this.config || {}), // Apply current config over defaults
-        ...newConfig,          // Apply new config over current/defaults
+        ...(this.config || {}),
+        ...newConfig,
     };
 
-    // Deep merge for nested config objects
     mergedConfig.schemaGraphConfig = {
         ...(DEFAULT_KP_CONFIG.schemaGraphConfig),
         ...((this.config || {}).schemaGraphConfig || {}),
@@ -62,16 +57,13 @@ export class KerbelizedParserator {
   }
 
   _initializeComponents() {
-    // Helper to (re)initialize components based on current this.config
     this.schemaGraph = new AdaptiveSchemaGraph(this.config.schemaGraphConfig);
     this.focusOptimizer = new BayesianFocusOptimizer(this.config.focusOptimizerConfig);
     this.thoughtBuffer = new TimestampedThoughtBuffer(this.config.thoughtBufferConfig);
+    this.lastRunOutcome = null; // Reset on re-init
 
-    // Only instantiate PPPProjector if pppProjectorConfig is not empty or has meaningful keys
-    // Check if pppProjectorConfig is explicitly provided and has content.
-    // An empty object {} might be passed by default merge, so check its keys.
     if (this.config.pppProjectorConfig && Object.keys(this.config.pppProjectorConfig).length > 0 &&
-        (Object.keys(this.config.pppProjectorConfig).some(k => this.config.pppProjectorConfig[k] !== undefined && this.config.pppProjectorConfig[k] !== DEFAULT_KP_CONFIG.pppProjectorConfig[k])) // Check if it's more than just empty defaults
+        (Object.keys(this.config.pppProjectorConfig).some(k => this.config.pppProjectorConfig[k] !== undefined && this.config.pppProjectorConfig[k] !== DEFAULT_KP_CONFIG.pppProjectorConfig[k]))
     ) {
         this.pppProjector = new PPPProjector(this.config.pppProjectorConfig);
         this._log("debug", "Internal PPPProjector (re)instantiated with config:", this.config.pppProjectorConfig);
@@ -83,8 +75,8 @@ export class KerbelizedParserator {
 
   async reconfigure(newConfig = {}) {
     this._log("info", "Reconfiguring KerbelizedParserator with new config:", JSON.stringify(newConfig,null,2));
-    this._initializeConfig(newConfig); // Apply new config merged with existing
-    this._initializeComponents();      // Re-initialize components with the new config
+    this._initializeConfig(newConfig);
+    this._initializeComponents();
     this._log("info", `KerbelizedParserator reconfigured. New mode: ${this.config.operationalMode}, New logging: ${this.config.loggingVerbosity}`);
     this._log("debug", "Full new config post-reconfigure:", JSON.stringify(this.config,null,2));
     return true;
@@ -92,7 +84,6 @@ export class KerbelizedParserator {
 
   _log(level, ...args) {
     if (LOG_LEVELS[level] >= this.logLevel) {
-      // Adding a check for JSON.stringify for objects to avoid "[object Object]"
       const processedArgs = args.map(arg => (typeof arg === 'object' && arg !== null) ? JSON.stringify(arg, null, 2) : arg);
       console.log(`[KP][${level.toUpperCase()}]`, ...processedArgs);
     }
@@ -122,21 +113,109 @@ export class KerbelizedParserator {
       this._log("info", "PPP Injection disabled by configuration.");
     }
 
+    const baseTemp = this.getCurrentTemperature(context);
+    const baseWeight = this.getAbstractionWeights(context);
+
+    // Construct focusParamsInput for BayesianFocusOptimizer
+    // It includes the parameters that *would* be used (baseTemp, baseWeight)
+    // and the outcome of the *previous* run (this.lastRunOutcome)
     const focusParamsInput = {
-      temperature: this.getCurrentTemperature(context),
-      abstractionWeight: this.getAbstractionWeights(context),
+      temperature: baseTemp,
+      abstractionWeight: baseWeight,
       contextualRelevance: pppProjection.relevanceScore,
-      currentPerformance: context.currentPerformanceMetrics,
-      computationalCost: input ? JSON.stringify(input).length : 0,
+      // Pass previous run's outcome, which includes its own temp, weight, performance, cost
+      // BFO's optimize() expects: currentPerformance, computationalCost for the *previous* run that used these specific temp/weight.
+      // So, if lastRunOutcome exists, we use its metrics but also pass the temp/weight that *led* to them.
+      currentPerformance: this.lastRunOutcome ? this.lastRunOutcome.performance : undefined,
+      computationalCost: this.lastRunOutcome ? this.lastRunOutcome.cost : undefined,
+      // The temp/weight in focusParamsInput are the *current* baselines,
+      // but BFO needs to associate lastRunOutcome's perf/cost with lastRunOutcome's temp/weight.
+      // This is now handled inside BFO by expecting 'temperature' and 'abstractionWeight' in currentContextParams
+      // to be the ones whose outcome is being reported as 'currentPerformance' and 'computationalCost'.
+      // So, we should pass the *previous* temp/weight if we are reporting on *their* performance.
+      // Let's adjust: focusParamsInput should represent the parameters whose performance is being reported.
+      // If there's a lastRunOutcome, we report on *its* parameters.
+      // If not, we report on current baseline params (with undefined performance).
+      ...(this.lastRunOutcome ? {
+            temperature: this.lastRunOutcome.temp,
+            abstractionWeight: this.lastRunOutcome.weight,
+            // currentPerformance & computationalCost already assigned above
+        } : {
+            // No previous run, so current baseline temp/weight are effectively what we are "testing"
+            // with an unknown performance.
+            temperature: baseTemp,
+            abstractionWeight: baseWeight,
+            // currentPerformance & computationalCost will be undefined here
+        }),
       ...(this.config.focusOptimizerConfig.defaultParams || {})
     };
-    this._log("debug", "Optimizing focus with params:", focusParamsInput);
-    const focusParams = await this.focusOptimizer.optimize(focusParamsInput);
-    this._log("info", "Focus params optimized:", focusParams);
 
-    return this.executeAdaptiveParsing(input, focusParams, pppProjection);
+    this._log("debug", "Calling focusOptimizer.optimize with input:", focusParamsInput);
+    const optimizedFocusParams = await this.focusOptimizer.optimize(focusParamsInput);
+    this._log("info", "Focus params optimized by BFO:", optimizedFocusParams);
+
+    // Use optimizedFocusParams for the actual parsing execution
+    const result = await this.executeAdaptiveParsing(input, optimizedFocusParams, pppProjection, context);
+
+    // Update lastRunOutcome for the NEXT call to optimize
+    this.lastRunOutcome = {
+        temp: optimizedFocusParams.temperature, // The temp that was actually USED for this run
+        weight: optimizedFocusParams.abstractionWeight, // The weight that was actually USED for this run
+        performance: result.confidence,
+        cost: input ? JSON.stringify(input).length : 0,
+        contextualRelevance: pppProjection.relevanceScore // Capture context of this run
+    };
+    this._log("debug", "Updated lastRunOutcome for next cycle:", this.lastRunOutcome);
+
+    return result;
   }
 
+  async executeAdaptiveParsing(input, currentFocusParams, pppProjection, originalContext) {
+    this._log("info", "executeAdaptiveParsing. Input keys:", Object.keys(input || {}), "FocusParams:", currentFocusParams);
+    const maxIter = (currentFocusParams && currentFocusParams.maxIterations) || this.config.defaultParsingDepth;
+
+    const schemaObjectToUse = await this.schemaGraph.getPreferredSchema(originalContext);
+    this._log("debug", "Preferred schema for parsing:", schemaObjectToUse ? schemaObjectToUse.id : "N/A");
+
+    if (!schemaObjectToUse || !schemaObjectToUse.definition) {
+        this._log("error", "No valid schema object could be retrieved for parsing.");
+        return { data: input, confidence: 0.01, iterations: 0, schemaVersion: 'error_no_schema', metadata: {focusParams: currentFocusParams, pppProjectionDetails: pppProjection, originalInput: input}};
+    }
+    const currentSchemaDef = schemaObjectToUse.definition;
+
+    const simulatedParsingOutput = {
+        parsedContent: { ...input, schemaUsed: currentSchemaDef.type, tempUsed: currentFocusParams.temperature },
+        quality: Math.random(),
+        stepsTaken: currentSchemaDef.extractionSteps ? currentSchemaDef.extractionSteps.length : 0
+    };
+    const finalConfidence = parseFloat((simulatedParsingOutput.quality * (currentFocusParams.temperature || 0.7)).toFixed(4));
+    this._log("debug", `Simulated parsing output quality: ${simulatedParsingOutput.quality.toFixed(4)}, temp-adjusted confidence: ${finalConfidence}`);
+
+    const adaptSchemaParseResult = {
+        input: input,
+        parsingOutput: simulatedParsingOutput,
+        focusParams: currentFocusParams,
+        confidence: finalConfidence
+    };
+    const adaptedSchemaObject = await this.schemaGraph.adaptSchema(schemaObjectToUse, adaptSchemaParseResult);
+    this._log("debug", "Schema after adaptation attempt. New strength:", adaptedSchemaObject ? adaptedSchemaObject.strength.toFixed(4) : "N/A");
+
+    return {
+      data: simulatedParsingOutput.parsedContent,
+      confidence: finalConfidence,
+      iterations: maxIter,
+      schemaVersion: adaptedSchemaObject.definition.version || '1.0.0',
+      metadata: {
+        focusParams: currentFocusParams,
+        pppProjectionDetails: pppProjection,
+        originalInput: input,
+        contextUsed: originalContext,
+        schemaIdUsed: schemaObjectToUse.id
+      }
+    };
+  }
+
+  // ... (projectToPPP, findOptimalInjectionPoints, getCurrentTemperature, getAbstractionWeights are unchanged from previous step) ...
   async projectToPPP(context) {
     if (this.pppProjector) {
       this._log("debug", "Using internal PPPProjector for projectToPPP.");
@@ -195,43 +274,5 @@ export class KerbelizedParserator {
     weight = weight !== undefined ? weight : 0.55;
     this._log("debug", `getAbstractionWeights returning: ${weight}`);
     return weight;
-  }
-
-  async executeAdaptiveParsing(input, focusParams, pppProjection) {
-    this._log("info", "executeAdaptiveParsing. Input keys:", Object.keys(input || {}), "FocusParam keys:", Object.keys(focusParams || {}));
-    const maxIter = (focusParams && focusParams.maxIterations) || this.config.defaultParsingDepth;
-    this._log("debug", `Max parsing iterations: ${maxIter}`);
-
-    const currentSchema = await this.schemaGraph.getRootSchema();
-    this._log("debug", "Current schema for parsing:", currentSchema ? currentSchema.type : "N/A");
-
-    const simulatedParsingOutput = {
-        parsedContent: { ...input },
-        quality: Math.random(),
-        stepsTaken: currentSchema && currentSchema.extractionSteps ? currentSchema.extractionSteps.length : 0
-    };
-    this._log("debug", "Simulated parsing output quality:", simulatedParsingOutput.quality);
-
-    const adaptedSchema = await this.schemaGraph.adaptSchema(currentSchema, {
-        input: input,
-        parsingOutput: simulatedParsingOutput,
-        focusParams: focusParams,
-        // Pass confidence directly for adaptSchema to use
-        confidence: simulatedParsingOutput.quality * (focusParams.temperature || 0.7)
-    });
-    this._log("debug", "Schema after adaptation attempt. New type (if changed):", adaptedSchema ? adaptedSchema.type : "N/A");
-
-    return {
-      data: simulatedParsingOutput.parsedContent,
-      confidence: simulatedParsingOutput.quality * (focusParams.temperature || 0.7),
-      iterations: maxIter,
-      schemaVersion: adaptedSchema.version || (currentSchema ? currentSchema.version : '1.0') || '1.0',
-      metadata: {
-        focusParams,
-        pppProjectionDetails: pppProjection,
-        originalInput: input,
-        contextUsed: pppProjection.projectedData && pppProjection.projectedData.originalContext ? pppProjection.projectedData.originalContext : pppProjection.projectedData
-      }
-    };
   }
 }
