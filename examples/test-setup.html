@@ -1,24 +1,17 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Visualization Kernel Test</title>
+    <title>Visualization Kernel Test - PMK Integration</title>
     <style>
-        body { margin: 0; background: #000; }
+        body { margin: 0; background: #111; color: #eee; font-family: monospace; }
         canvas { display: block; width: 100vw; height: 100vh; }
+        /* Add a small area for messages if needed */
+        #messages { position: fixed; top: 10px; left: 10px; background: rgba(0,0,0,0.5); padding: 5px; z-index:100; }
     </style>
 </head>
 <body>
+    <div id="messages">Loading test...</div>
     <canvas id="viz-canvas"></canvas>
-    <!--
-        To use this, you would typically import and run a script
-        like examples/quick-start.js or a specific test setup.
-        Example: <script type="module" src="./quick-start.js"></script>
-    -->
-    <script type="module">
-        // Minimal inline test or import another example script
-        console.log("test-setup.html loaded. Canvas is ready.");
-        // You can import quick-start.js or other examples here:
-        // import './quick-start.js';
-    </script>
+    <script type="module" src="./test-pmk-integration.js"></script>
 </body>
 </html>

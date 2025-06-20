@@ -412,6 +412,56 @@ class HypercubeCore {
         });
         this.projectionUniformsData = new Float32Array(this.projectionUniformsBufferSize / 4);
         console.log("WebGPU Uniform Buffers Initialized");
+
+        // Initialize bind group properties to null
+        this.globalUniformsBindGroup = null;
+        this.dataChannelsBindGroup = null;
+        this.geometryUniformsBindGroup = null;
+        this.projectionUniformsBindGroup = null;
+        this.pipelineLayout = null;
+        this.renderPipeline = null;
+
+        this._createBindGroupLayouts();
+        // Bind groups and pipeline are created after buffers are populated for the first time.
+    }
+
+    _createBindGroupLayouts() {
+        this.globalUniformsBindGroupLayout = this.device.createBindGroupLayout({
+            label: "Global Uniforms BGL",
+            entries: [{
+                binding: 0, // Matches @group(0) @binding(0) in WGSL
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: 'uniform' }
+            }]
+        });
+
+        this.dataChannelsBindGroupLayout = this.device.createBindGroupLayout({
+            label: "Data Channels BGL",
+            entries: [{
+                binding: 0, // Matches @group(1) @binding(0) in WGSL
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: 'uniform' }
+            }]
+        });
+
+        this.geometryUniformsBindGroupLayout = this.device.createBindGroupLayout({
+            label: "Geometry Uniforms BGL",
+            entries: [{
+                binding: 0, // Matches @group(2) @binding(0) in WGSL (assuming)
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: 'uniform' }
+            }]
+        });
+
+        this.projectionUniformsBindGroupLayout = this.device.createBindGroupLayout({
+            label: "Projection Uniforms BGL",
+            entries: [{
+                binding: 0, // Matches @group(3) @binding(0) in WGSL (assuming)
+                visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                buffer: { type: 'uniform' }
+            }]
+        });
+        console.log("WebGPU Bind Group Layouts Created (Global, DataChannels, Geometry, Projection).");
     }
 
     _populateInitialUniformData() {
@@ -432,6 +482,148 @@ class HypercubeCore {
         this.device.queue.writeBuffer(this.projectionUniformsBuffer, 0, this.projectionUniformsData);
 
         console.log("Initial uniform data written to GPU buffers.");
+
+        this._createBindGroups();
+        this._setupInitialRenderPipeline(); // Call after BGLs and BGs are ready (or at least BGLs)
+    }
+
+    async _setupInitialRenderPipeline() { // Made async to align with potential async shader compilation if ever needed
+        if (!this.shaderManager || !this.device) {
+            console.error("HypercubeCore: ShaderManager or GPUDevice not available for pipeline setup.");
+            return;
+        }
+
+        const vsModule = this.shaderManager.shaderModules['basicVS'];
+        const fsModule = this.shaderManager.shaderModules['basicFS'];
+
+        if (!vsModule || !fsModule) {
+            console.error("HypercubeCore: Basic shader modules (basicVS or basicFS) not found in ShaderManager.");
+            return;
+        }
+
+        try {
+            // For the basic pipeline, we only need global uniforms and data channels.
+            // More complex shaders might use geometry and projection specific bind group layouts.
+            this.pipelineLayout = this.device.createPipelineLayout({
+                label: "Basic Pipeline Layout",
+                bindGroupLayouts: [
+                    this.globalUniformsBindGroupLayout,
+                    this.dataChannelsBindGroupLayout
+                    // this.geometryUniformsBindGroupLayout, // Not used by basicFragmentWGSL group(2)
+                    // this.projectionUniformsBindGroupLayout  // Not used by basicFragmentWGSL group(3)
+                ]
+            });
+            console.log("HypercubeCore: Created GPUPipelineLayout for basic pipeline using groups 0 and 1.");
+
+            const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+
+            const pipelineDescriptor = {
+                label: "Basic FullScreen Render Pipeline",
+                layout: this.pipelineLayout,
+                vertex: {
+                    module: vsModule,
+                    entryPoint: "main",
+                    // buffers: [] // Empty because basicVertexWGSL generates vertices internally using @builtin(vertex_index)
+                                // However, if we use this.quadBuffer, we need to describe its layout.
+                                // The current basicVertexWGSL does not use @location attributes, so this should be empty.
+                                // If drawing with this.quadBuffer via setVertexBuffer, a layout is expected.
+                                // For a shader that *only* uses @builtin(vertex_index) and draws 6 vertices,
+                                // no vertex buffer or layout is strictly needed if draw() is called with vertexCount: 6.
+                                // But since we have a quadBuffer, let's define its layout for setVertexBuffer call.
+                    buffers: [{
+                        arrayStride: 2 * 4, // 2 floats (x,y), 4 bytes per float
+                        attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }]
+                        // This shaderLocation:0 is not used by the current basicVS, but good practice if quadBuffer is set.
+                        // If basicVS were to use `@location(0) pos_in: vec2<f32>`, this would map.
+                        // For now, the draw call will use 6 vertices, and the shader will use vertex_index.
+                    }]
+                },
+                fragment: {
+                    module: fsModule,
+                    entryPoint: "main",
+                    targets: [{ format: presentationFormat }]
+                },
+                primitive: {
+                    topology: "triangle-list",
+                },
+            };
+            // If vertex shader truly has no inputs from buffers (only @builtin(vertex_index))
+            // then pipelineDescriptor.vertex.buffers should be an empty array or undefined.
+            // Since we set this.quadBuffer, we must provide a layout for it.
+            // The basicVertexWGSL doesn't use `@location(0)` so it won't consume this buffer, but WebGPU validation might require it if a buffer is set.
+            // Let's simplify: if the shader *only* uses vertex_index, we shouldn't set a vertex buffer.
+            // However, our _drawFrameLogic *does* set this.quadBuffer.
+            // So, we must define the layout. The shader just doesn't use it.
+
+            this.renderPipeline = this.shaderManager.getRenderPipeline("basicTestPipeline", pipelineDescriptor);
+
+            if (this.renderPipeline) {
+                console.log("HypercubeCore: Basic render pipeline setup successful.");
+            } else {
+                console.error("HypercubeCore: Failed to setup basic render pipeline from ShaderManager.");
+            }
+        } catch (error) {
+            console.error("HypercubeCore: Error in _setupInitialRenderPipeline:", error);
+        }
+    }
+
+
+    _createBindGroups() {
+        if (this.globalUniformsBindGroupLayout && this.globalUniformsBuffer) {
+            this.globalUniformsBindGroup = this.device.createBindGroup({
+                label: "Global Uniforms Bind Group",
+                layout: this.globalUniformsBindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: { buffer: this.globalUniformsBuffer }
+                }]
+            });
+            console.log("Created globalUniformsBindGroup.");
+        } else {
+            console.error("Failed to create globalUniformsBindGroup: Layout or Buffer missing.");
+        }
+
+        if (this.dataChannelsBindGroupLayout && this.dataChannelsBuffer) {
+            this.dataChannelsBindGroup = this.device.createBindGroup({
+                label: "Data Channels Bind Group",
+                layout: this.dataChannelsBindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: { buffer: this.dataChannelsBuffer }
+                }]
+            });
+            console.log("Created dataChannelsBindGroup.");
+        } else {
+            console.error("Failed to create dataChannelsBindGroup: Layout or Buffer missing.");
+        }
+
+        if (this.geometryUniformsBindGroupLayout && this.geometryUniformsBuffer) {
+            this.geometryUniformsBindGroup = this.device.createBindGroup({
+                label: "Geometry Uniforms Bind Group",
+                layout: this.geometryUniformsBindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: { buffer: this.geometryUniformsBuffer }
+                }]
+            });
+            console.log("Created geometryUniformsBindGroup.");
+        } else {
+            console.error("Failed to create geometryUniformsBindGroup: Layout or Buffer missing.");
+        }
+
+        if (this.projectionUniformsBindGroupLayout && this.projectionUniformsBuffer) {
+            this.projectionUniformsBindGroup = this.device.createBindGroup({
+                label: "Projection Uniforms Bind Group",
+                layout: this.projectionUniformsBindGroupLayout,
+                entries: [{
+                    binding: 0,
+                    resource: { buffer: this.projectionUniformsBuffer }
+                }]
+            });
+            console.log("Created projectionUniformsBindGroup.");
+        } else {
+            console.error("Failed to create projectionUniformsBindGroup: Layout or Buffer missing.");
+        }
     }
 
     // New method to map this.state to the this.globalUniformsData TypedArray
@@ -661,16 +853,26 @@ class HypercubeCore {
             //    // Potentially stop rendering or use a fallback
             // }
 
-            // TODO: Create and set bind groups for uniform buffers
-            // passEncoder.setBindGroup(0, this.globalUniformsBindGroup); // Example
-            // passEncoder.setBindGroup(1, this.dataChannelsBindGroup); // Example
-            // passEncoder.setBindGroup(2, this.geometryUniformsBindGroup); // Example
-            // passEncoder.setBindGroup(3, this.projectionUniformsBindGroup); // Example
+        // TODO: Set actual pipeline from ShaderManager
+        if (this.renderPipeline) {
+            passEncoder.setPipeline(this.renderPipeline);
+
+            // Set bind groups
+            if (this.globalUniformsBindGroup) passEncoder.setBindGroup(0, this.globalUniformsBindGroup);
+            if (this.dataChannelsBindGroup) passEncoder.setBindGroup(1, this.dataChannelsBindGroup);
+            // Geometry and Projection bind groups are not used by the basic shader
+            // if (this.geometryUniformsBindGroup) passEncoder.setBindGroup(2, this.geometryUniformsBindGroup);
+            // if (this.projectionUniformsBindGroup) passEncoder.setBindGroup(3, this.projectionUniformsBindGroup);
+
+        } else {
+           console.error("HypercubeCore: No render pipeline available for drawing!");
+           // Potentially stop rendering or use a fallback
+        }
 
 
-            if (this.quadBuffer) {
+        if (this.quadBuffer && this.renderPipeline) { // Ensure pipeline is set before drawing
                 passEncoder.setVertexBuffer(0, this.quadBuffer);
-                // passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
+            passEncoder.draw(6, 1, 0, 0); // For 6 vertices (2 triangles)
                 // If using triangle strip with 4 vertices: passEncoder.draw(4, 1, 0, 0);
                 // For now, commented out as pipeline is not set.
             }
@@ -821,11 +1023,26 @@ class HypercubeCore {
         this.dataChannelsBuffer?.destroy();
         this.geometryUniformsBuffer?.destroy();
         this.projectionUniformsBuffer?.destroy();
+        this.quadBuffer?.destroy(); // Also destroy quadBuffer
 
         this.globalUniformsBuffer = null;
         this.dataChannelsBuffer = null;
         this.geometryUniformsBuffer = null;
         this.projectionUniformsBuffer = null;
+        this.quadBuffer = null;
+
+        // Release layouts
+        this.globalUniformsBindGroupLayout = null;
+        this.dataChannelsBindGroupLayout = null;
+        this.geometryUniformsBindGroupLayout = null;
+        this.projectionUniformsBindGroupLayout = null;
+        this.pipelineLayout = null;
+
+        // Release bind groups
+        this.globalUniformsBindGroup = null;
+        this.dataChannelsBindGroup = null;
+        this.geometryUniformsBindGroup = null;
+        this.projectionUniformsBindGroup = null;
 
         this.device = null;
         this.queue = null;

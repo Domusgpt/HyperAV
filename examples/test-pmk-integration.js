@@ -1,115 +1,117 @@
 // Ensure all paths are correct relative to 'examples/' directory
-import { VisualizerController } from '../controllers/VisualizerController.js'; // Actual VC, though Dummy is used
+import { VisualizerController } from '../controllers/VisualizerController.js';
 import { PMKDataAdapter } from '../controllers/PMKDataAdapter.js';
 import { KerbelizedParserator } from '../pmk-integration/parsers/KerbelizedParserator.js';
-import { PPPProjector } from '../pmk-integration/parsers/PPPProjector.js';
-import { TimestampedThoughtBuffer } from '../pmk-integration/optimizers/TimestampedThoughtBuffer.js';
+// PPPProjector and TimestampedThoughtBuffer are used internally by KerbelizedParserator
+// import { PPPProjector } from '../pmk-integration/parsers/PPPProjector.js';
+// import { TimestampedThoughtBuffer } from '../pmk-integration/optimizers/TimestampedThoughtBuffer.js';
 import { HOASBridge } from '../controllers/HOASBridge.js';
+import { HypercubeCore } from '../core/HypercubeCore.js';
+import { ShaderManager } from '../core/ShaderManager.js';
 
-console.log("test-pmk-integration.js: Loaded. Testing with HOASBridge - Iterative Processing & Schema Evolution. DummyVC enhanced.");
-
-class DummyVisualizerController {
-    constructor() {
-        console.log("DummyVisualizerController instantiated for PMK test.");
-        this.currentPolytope = "hypercube"; // Default
-        this.currentStyles = { glitchIntensity: 0.0 }; // Start with a known default
-        this.lastDataSnapshot = null;
-        this.mappingRules = { ubo: [], direct: {} }; // Mock internal state
-    }
-
-    updateData(dataSnapshot) {
-        console.log("DummyVisualizerController.updateData CALLED with snapshot:", JSON.stringify(dataSnapshot, null, 2));
-        this.lastDataSnapshot = dataSnapshot;
-        // Simulate logging what would be processed based on some dummy mapping rules
-        // This helps verify the structure of dataSnapshot PMKDataAdapter sends.
-        if (this.mappingRules.ubo.length > 0 || Object.keys(this.mappingRules.direct).length > 0) {
-            console.log("  DummyVC: (Simulating mapping of received snapshot based on internal rules - not actual VC logic)");
-        } else {
-            console.log("  DummyVC: (No mapping rules set, just received data)");
-        }
-    }
-
-    setPolytope(polytopeName) {
-        console.log(`DummyVisualizerController.setPolytope CALLED with polytopeName: '${polytopeName}'`);
-        if(this.currentPolytope !== polytopeName){
-            console.log(`  DummyVC: Polytope changed from '${this.currentPolytope}' to '${polytopeName}'.`);
-            this.currentPolytope = polytopeName;
-        } else {
-            console.log(`  DummyVC: Polytope already '${polytopeName}'. No change.`);
-        }
-    }
-
-    setVisualStyle(styleParams) {
-        console.log("DummyVisualizerController.setVisualStyle CALLED with styleParams:", JSON.stringify(styleParams, null, 2));
-        // Check for actual changes to log more informatively
-        let changed = false;
-        for(const key in styleParams){
-            if(JSON.stringify(this.currentStyles[key]) !== JSON.stringify(styleParams[key])){
-                changed = true;
-                break;
-            }
-        }
-        if(changed || Object.keys(this.currentStyles).length !== Object.keys(styleParams).length && Object.keys(styleParams).length > 0){
-             console.log("  DummyVC: Visual styles updated from:", this.currentStyles, "to merge with:", styleParams);
-             this.currentStyles = { ...this.currentStyles, ...styleParams };
-        } else if (Object.keys(styleParams).length === 0) {
-            console.log("  DummyVC: setVisualStyle called with empty params (no changes).");
-        }
-         else {
-            console.log("  DummyVC: setVisualStyle called, but new styles match current. No effective change.", this.currentStyles);
-        }
-    }
-
-    setDataMappingRules(newRules) {
-        console.log("DummyVisualizerController.setDataMappingRules CALLED with newRules:", JSON.stringify(newRules, null, 2));
-        this.mappingRules = JSON.parse(JSON.stringify(newRules)); // Deep copy
-    }
-
-    setSpecificUniform(uniformName, value) {
-        console.log(`DummyVisualizerController.setSpecificUniform CALLED for '${uniformName}' with value:`, value);
-    }
-
-    // These methods are part of the actual VisualizerController's interface with HypercubeCore,
-    // but PMKDataAdapter now uses updateData, setPolytope, setVisualStyle.
-    // Logging them here is not essential for testing PMKDataAdapter's new behavior.
-    updateUBOChannels(data) { /* console.log("DummyVisualizerController.updateUBOChannels called with:", JSON.stringify(data, null, 2)); */ }
-    updateDirectParameters(data) { /* console.log("DummyVisualizerController.updateDirectParameters called with:", JSON.stringify(data, null, 2)); */ }
-}
-
+console.log("test-pmk-integration.js: Loaded. Setting up full WebGPU stack if canvas present.");
 
 async function mainPMKTest() {
-    console.log("test-pmk-integration.js: mainPMKTest() started - Iterative Processing & Schema Evolution.");
+    const messagesDiv = document.getElementById('messages');
+    if (messagesDiv) messagesDiv.textContent = 'Initializing WebGPU and Core Components...';
 
-    const vizController = new DummyVisualizerController(); // Using the enhanced Dummy
-    const pmkAdapter = new PMKDataAdapter(vizController);
+    const canvas = document.getElementById('viz-canvas');
+    if (!canvas) {
+        console.error("test-pmk-integration.js: Canvas element #viz-canvas not found. Cannot run full visual test.");
+        if (messagesDiv) messagesDiv.textContent = 'Error: Canvas #viz-canvas not found.';
+        return;
+    }
+    // Set canvas size based on window, or fixed for testing consistency
+    canvas.width = window.innerWidth > 0 ? window.innerWidth : 800;
+    canvas.height = window.innerHeight > 0 ? window.innerHeight : 600;
 
-    const initialKpConfig = {
-        loggingVerbosity: "info",
-        schemaGraphConfig: {
-            initialSchemaDefinition: { type: 'base_schema', complexity: 3, version: '1.0.0' },
-            minConfidenceForAdaptation: 0.6,
-            adaptationStrategy: 'conservative',
-            allowDynamicSchemaCreation: true
-        },
-        focusOptimizerConfig: {
-            defaultTemperature: 0.6,
-            defaultAbstractionWeight: 0.6,
-            optimizationGoal: "balance_accuracy_cost",
-            explorationFactor: 0.2,
-            parameterBounds: { temperature: [0.1, 0.9], abstractionWeight: [0.1, 0.9] },
-            maxHistorySize: 15
-        },
-        enablePPPinjection: false,
-    };
 
-    const parserator = new KerbelizedParserator(initialKpConfig);
-    const hoasBridge = new HOASBridge(parserator);
+    let core;
+    let shaderManager;
+    let vizController;
+    let pmkAdapter;
+    let parserator;
+    let hoasBridge;
 
-    console.log("\n--- Initial State ---");
-    let status = await hoasBridge.getParserStatus();
-    console.log("Initial Parser Config from Bridge:", JSON.stringify(status.parseratorConfiguration, null, 2));
-    let schemaRep = await hoasBridge.getCurrentSchemaRepresentation();
-    console.log("Initial Schema Rep from Bridge:", JSON.stringify(schemaRep, null, 2));
+    try {
+        console.log("Instantiating HypercubeCore (async)...");
+        // Pass null for shaderManager initially, will be set after device is available.
+        // Provide initial state for HypercubeCore, including dataChannels.
+        const coreConfig = {
+            dataChannels: new Array(64).fill(0.1) // Initialize with some non-zero data
+        };
+        core = new HypercubeCore(canvas, null, coreConfig);
+        await core._asyncInitialization; // Wait for device
+
+        if (!core.device) {
+            console.error("HypercubeCore initialization failed to create a WebGPU device.");
+            if (messagesDiv) messagesDiv.textContent = 'Error: WebGPU device creation failed.';
+            return;
+        }
+
+        console.log("Instantiating ShaderManager...");
+        shaderManager = new ShaderManager(core.device);
+        core.shaderManager = shaderManager;
+
+        // HypercubeCore's _populateInitialUniformData calls _setupInitialRenderPipeline after
+        // BGLs and BGs are created. This happens as part of the _asyncInitialization.
+
+        console.log("Instantiating VisualizerController...");
+        const vizControllerConfig = {
+            mappingRules: {
+                ubo: [
+                    { snapshotField: "kp_confidence", uboChannelIndex: 0, defaultValue: 0.0 },
+                    { snapshotField: "kp_focus_temp", uboChannelIndex: 1, defaultValue: 0.5 },
+                    { snapshotField: "kp_payload_size", uboChannelIndex: 2, defaultValue: 0.0, transform: "logScale" },
+                    { snapshotField: "kp_iterations", uboChannelIndex: 3, defaultValue: 0.0 },
+                    { snapshotField: "kp_error_count", uboChannelIndex: 4, defaultValue: 0.0 } // Example mapping for error
+                ],
+                direct: {
+                    // "kp_schema_id_used": { coreStateName: "currentSchemaInfoString", defaultValue: "N/A" }, // Conceptual
+                    "kp_error_count": { coreStateName: "glitchIntensity", transform: (val) => val > 0 ? val * 0.2 + 0.1 : 0.0, defaultValue: 0.0 }
+                }
+            },
+            customTransformations: {
+                logScale: (value) => (value > 0 ? Math.log1p(value) / Math.log1p(1000) : 0), // Normalize log output somewhat
+            }
+        };
+        vizController = new VisualizerController(core, vizControllerConfig);
+
+        console.log("Instantiating PMKDataAdapter...");
+        pmkAdapter = new PMKDataAdapter(vizController);
+
+        console.log("Instantiating KerbelizedParserator & HOASBridge...");
+        const initialKpConfig = {
+            loggingVerbosity: "info",
+            schemaGraphConfig: {
+                initialSchemaDefinition: { type: 'base_schema', complexity: 3, version: '1.0.0' },
+                minConfidenceForAdaptation: 0.6,
+                adaptationStrategy: 'conservative',
+                allowDynamicSchemaCreation: true
+            },
+            focusOptimizerConfig: {
+                defaultTemperature: 0.6,
+                defaultAbstractionWeight: 0.6,
+                optimizationGoal: "balance_accuracy_cost",
+                explorationFactor: 0.2,
+                parameterBounds: { temperature: [0.1, 0.9], abstractionWeight: [0.1, 0.9] },
+                maxHistorySize: 15
+            },
+            enablePPPinjection: false,
+        };
+        parserator = new KerbelizedParserator(initialKpConfig);
+        hoasBridge = new HOASBridge(parserator);
+
+        console.log("Starting HypercubeCore render loop...");
+        core.start();
+
+        if (messagesDiv) messagesDiv.textContent = 'PMK Integration Test Running... (Iterative with WebGPU Core)';
+
+    } catch (error) {
+        console.error("Error during test setup:", error);
+        if (messagesDiv) messagesDiv.textContent = 'Error during setup: ' + error.message;
+        return;
+    }
 
     const numIterations = 15;
     let currentContext = {
@@ -125,10 +127,10 @@ async function mainPMKTest() {
         currentContext.dataTypeHint = "generic_unknown";
         if (i === 2) {
             currentContext.dataTypeHint = "email";
-            console.log("Setting dataTypeHint to 'email' for this iteration to trigger template creation.");
+            console.log("Setting dataTypeHint to 'email' for this iteration.");
         } else if (i === 4) {
             currentContext.dataTypeHint = "date";
-            console.log("Setting dataTypeHint to 'date' for this iteration to trigger template creation.");
+            console.log("Setting dataTypeHint to 'date' for this iteration.");
         } else if (i === 8) {
             currentContext.dataTypeHint = "email";
             console.log("Trying dataTypeHint 'email' after (potentially) disabling dynamic creation.");
@@ -137,6 +139,8 @@ async function mainPMKTest() {
         const inputData = {
             text: `Test sentence number ${i+1}. Random content: ${Math.random().toString(36).substring(2)}.`,
             iteration: i,
+            // Simulate some varying data that could affect confidence if parsing were real
+            complexity_metric: Math.random()
         };
 
         if (i === 6) {
@@ -151,7 +155,7 @@ async function mainPMKTest() {
             await hoasBridge.updateParserSubConfiguration("schemaGraphConfig", { adaptationStrategy: "aggressive_learning" });
         }
 
-        console.log("Calling hoasBridge.processData with input:", inputData, "context:", currentContext);
+        // console.log("Calling hoasBridge.processData with input:", inputData, "context:", currentContext);
         const result = await hoasBridge.processData(inputData, currentContext);
 
         if (result && result.metadata && result.metadata.focusParams) {
@@ -162,9 +166,11 @@ async function mainPMKTest() {
             console.error(`Iter ${i+1} - Invalid result structure:`, result);
         }
 
-        // Call PMKDataAdapter to see its calls to DummyVisualizerController
-        console.log(`--- PMKDataAdapter processing result of Iter ${i+1} ---`);
-        pmkAdapter.processPMKUpdate(result); // This will now log through the DummyVC
+        if (result) { // Ensure result is valid before processing
+            console.log(`--- PMKDataAdapter processing result of Iter ${i+1} ---`);
+            pmkAdapter.processPMKUpdate(result);
+        }
+
 
         const currentSchemaCount = parserator.schemaGraph.schemas.size;
         console.log(`Current schema count: ${currentSchemaCount}`);
@@ -189,6 +195,8 @@ async function mainPMKTest() {
                  console.log(`  Schema ID: ${schemaObj.id}, Strength: ${schemaObj.strength.toFixed(4)}, Usage Count: ${schemaObj.usageCount}, Version: ${schemaObj.definition.version}, Complexity: ${schemaObj.definition.complexity}, Parent: ${schemaObj.definition.parentSchemaId || 'N/A'}`);
             }
         }
+         // Small delay to allow render loop to process and log, and to make visual changes more observable
+        if (typeof document !== 'undefined') await new Promise(resolve => setTimeout(resolve, 100));
     }
 
     console.log(`\n--- Final State after ${numIterations} iterations ---`);
@@ -201,9 +209,12 @@ async function mainPMKTest() {
     console.log("BFO History (last 5 entries):");
     parserator.focusOptimizer.history.slice(-5).forEach((h, idx) => console.log(`  Hist[${idx-5}]: temp=${h.temp.toFixed(3)}, weight=${h.weight.toFixed(3)}, perf=${h.performance ? h.performance.toFixed(3):'N/A'}, cost=${h.cost}`));
 
-    console.log("\nmainPMKTest() finished successfully. Review logs for adaptive behaviors and schema creation.");
+    console.log("\nmainPMKTest() finished successfully. Review logs for adaptive behaviors and WebGPU core state logs.");
+    if (messagesDiv) messagesDiv.textContent = 'Test complete. Check console for detailed logs and HypercubeCore render state.';
 }
 
 mainPMKTest().catch(err => {
     console.error("Error during mainPMKTest:", err);
+    const messagesDiv = document.getElementById('messages');
+    if (messagesDiv) messagesDiv.textContent = 'Test FAILED. Check console for errors.';
 });
